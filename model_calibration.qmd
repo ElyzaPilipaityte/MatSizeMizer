@@ -1,0 +1,1348 @@
+---
+title: "small_species_ext_mort"
+author: "Elyza Pilipaityte"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+clear memory
+
+```{r}
+rm(list=ls())
+
+```
+
+Install mizer, load libraries
+
+```{r}
+# remotes::install_github("sizespectrum/mizerExperimental", ref = "tuneMR_w_max", force=T)
+remotes::install_github("sizespectrum/mizerExperimental")
+# remotes::install_github("sizespectrum/mizerMR")
+
+library(mizerMR)
+library(tidyverse)
+library(assertthat)
+library(mizerHowTo)
+library(patchwork)
+```
+
+```{r}
+# Define my own plotting 'theme' (called 'My_theme')
+My_theme <- theme(
+  panel.background = element_blank(),
+  axis.line = element_line(linewidth = 1),  # draws x and y axis lines
+  text = element_text(size = 17, family = "gillsans")
+)
+```
+
+For this model, we had the following main criteria:
+
+1)  Modelled biomasses were within 20% of the average observed biomasses from 1992-2001.
+2)  The biomass size spectrum slope was negative and close to -1.
+3)  Growth curves match observed size-at-age data for each species.
+4)  Perch and pikeperch diets captured dietary changes with body size and became more piscivorous at larger sizes.
+5)  Recruitment parameters ensured single-species yield curves were dome-shaped, as expected by theory.
+6)  The modeled catches through time captured the trends in the reported catches.
+
+### Setting mizer model
+
+Load parameters
+
+```{r warning=F, message=FALSE, echo=F, eval = T}
+# Read in species parameters, gear parameters and the interaction matrix files
+curonian_params <- read.csv("curonian_params3.csv")
+curonian_interaction <- read.csv("curonian_interaction2.csv") 
+curonian_gear_params <- read.csv("curonian_gear_params.csv")
+
+```
+
+```{r warning=F, message=FALSE, echo=F, eval = T}
+# Modify gear names to match species names
+curonian_gear_params$gear <- curonian_gear_params$species
+
+# effort vector
+initial_effort <- c(0, 0, 0.111, 0.006, 0.131, 0.077, 0.083)
+
+cur_model <- newMultispeciesParams(species_params = curonian_params, 
+                                   interaction = curonian_interaction,
+                                   gear_params = curonian_gear_params,
+                                   initial_effort = initial_effort, no_w = 200,
+                                   lambda = 2.05, n = 3/4, p = 0.7,
+                                   resource_rate = 10)
+
+cur_model <- steady(cur_model, t_max = 200)
+plotSpectra(cur_model, power = 2, total = TRUE)
+
+```
+
+# Setting allometric external death rate
+
+```{r}
+# Setting coefficient for each species
+z0pre <- c("small_fish" = 0.1, "ruffe" = 0.1, "bream" = 0.1, "white_bream" = 0.1, "roach" = 0.1, "perch" = 0.1, "pikeperch" = 0.1)
+# Multiply by power of size with exponent, here chosen to be -1/4
+# The outer() function makes it an array species x size
+allo_mort <- outer(z0pre, w(cur_model)^(-1/4))
+# Change the external mortality rate in the params object
+ext_mort(cur_model) <- allo_mort
+```
+
+### Biomass, growth and yields calibration
+
+Defining function
+
+```{r}
+check_convergence <- function(model, params, tol_biomass = 0.2, tol_age = 0.5, tol_yield = 0.2) {
+  model_biomass <- getBiomass(model)
+  obs_biomass <- params$biomass_observed
+  
+  # Biomass convergence
+  biomass_diff <- abs(model_biomass - obs_biomass)
+  biomass_converged <- all(biomass_diff < tol_biomass)
+  
+  # Age convergence
+  age_diff <- abs(age_mat(model) - params$age_mat)
+  age_converged <- all(age_diff < tol_age)
+  
+  # Yield convergence (only for species with observed data)
+  yield_converged <- TRUE
+  max_yield_diff <- 0
+  
+  if(!is.null(params$yield_observed)) {
+    model_yield <- getYield(model)
+    
+    # Only checking species that have observed yield data (not NA)
+    valid_species <- !is.na(params$yield_observed)
+    
+    if(any(valid_species)) {
+      yield_diff <- abs(model_yield[valid_species] - params$yield_observed[valid_species])
+      yield_converged <- all(yield_diff < tol_yield)
+      max_yield_diff <- max(yield_diff)
+    }
+  }
+  
+  list(converged = biomass_converged & age_converged & yield_converged,
+       biomass_converged = biomass_converged,
+       age_converged = age_converged,
+       yield_converged = yield_converged,
+       max_biomass_diff = max(biomass_diff),
+       max_age_diff = max(age_diff),
+       max_yield_diff = max_yield_diff)
+}
+```
+
+Calibration
+
+```{r}
+# Iterative calibration
+cur_model <- steady(cur_model, t_max = 100)
+
+max_iter <- 50
+
+for(i in 1:max_iter) {
+  cur_model <- cur_model |>
+    calibrateBiomass() |>
+    matchBiomasses() |>
+    steady(t_max = 100) |>
+    matchGrowth() |>
+    steady(t_max = 100)
+  
+  # yield matching only for species with observed yield data
+  if(!is.null(curonian_params$yield_observed) && any(!is.na(curonian_params$yield_observed))) {
+    
+    cur_model <- cur_model |>
+      matchYield() |>  
+      steady(t_max = 100)
+  }
+  
+  conv <- check_convergence(cur_model, curonian_params, 
+                           tol_biomass = 0.2, tol_age = 0.5, tol_yield = 0.2)
+  
+  if(i %% 5 == 0) {
+    yield_status <- if(is.na(conv$max_yield_diff)) "NA" else sprintf("%.2f", conv$max_yield_diff)
+    cat(sprintf("Iter %d - Biomass: %s (%.2f), Age: %s (%.2f yr), Yield: %s (%s)\n",
+                i, conv$biomass_converged, conv$max_biomass_diff,
+                conv$age_converged, conv$max_age_diff,
+                conv$yield_converged, yield_status))
+  }
+  
+  if(conv$converged) {
+    cat("Converged after", i, "iterations\n")
+    break
+  }
+}
+
+cur_model@catchability
+```
+
+Resource abundance (kappa) calibration
+
+```{r}
+cur_model@resource_params$kappa # very low now
+
+cur_model <- scaleDownBackground(cur_model, factor = 1/2)
+```
+
+Running calibration again after rescaling resource abundance (repeated several times to get desirable kappa value 6 or 7)
+
+### Tune resilience
+
+If I set erepro to 0.001 it converges faster
+
+```{r}
+# I change erepro for all species to 0.001, R_max is also changed when using setBevertonHolt()
+cur_model <- setBevertonHolt(cur_model, erepro = 0.001)
+species_params(cur_model) |> select(erepro, R_max)
+# Let’s see what reproduction levels this gives:
+getReproductionLevel(cur_model)
+# the reproduction level is the ratio between RDD and R_max and can vary between 0 and 1. It tells us how close the actual reproduction (after applying density dependence) is to the theoretical maximum, set by R_max
+getRDD(cur_model) / species_params(cur_model)$R_max
+# how close the density dependent reproduction rate RDD is to the density independent reproduction rate RDI:
+getRDI(cur_model) / getRDD(cur_model)
+```
+
+Tuning reproduction level (this code chunk will take around 30 minutes to run if I start from erepro 0.001 if from initial calibrated erepro, then it can take several hours)
+
+```{r}
+rep_level <- getReproductionLevel(cur_model)
+
+# Safety bounds for reproduction levels
+RL_MIN <- 0.1
+RL_MAX <- 0.999
+
+cat("Checking initial reproduction levels...\n")
+print(rep_level)
+
+if(any(rep_level < RL_MIN | rep_level > RL_MAX)) {
+  cat("\nCorrecting out-of-bounds reproduction levels:\n")
+  problematic <- rep_level < RL_MIN | rep_level > RL_MAX
+  print(rep_level[problematic])
+  
+  rep_level[rep_level < RL_MIN] <- 0.1
+  rep_level[rep_level > RL_MAX] <- RL_MAX
+  cur_model <- setBevertonHolt(cur_model, reproduction_level = rep_level)
+  
+  cat("Corrected values:\n")
+  print(rep_level[problematic])
+}
+
+sppList <- cur_model@species_params$species
+
+# Fmsy target ranges
+FlevelMax <- c(0.5, 0.5, 0.7, 0.7, 0.7, 0.5, 0.3)  # Bream, Perch, Pikeperch, Roach, Ruffe, Small Fish, White Bream
+FlevelMin <- c(0.1, 0.1, 0.05, 0.1, 0.1, 0.1, 0.1)
+
+# F crash targets - where yield should be close to zero
+# Species order: Bream, Perch, Pikeperch, Roach, Ruffe, Small Fish, White Bream
+FcrashTarget <- c(1.0, 1.1, 1.5, 1.5, 1.5, 1.1, 1.0)
+FcrashTolerance <- 0.15  # Allow ±0.15 around target
+
+test_value <- rep(NA, 7)
+crash_F <- rep(NA, 7)
+tracking_df <- data.frame()
+
+for (i in 1:100) {
+  cat(sprintf("\n========== Iteration %d ==========\n", i))
+  
+  # Batch update approach
+  rep_level_new <- getReproductionLevel(cur_model)
+  
+  for (n in 1:7) {
+    current_species <- sppList[n]
+    currentRL <- rep_level_new[current_species]
+    
+    # Extended F range to capture crash point
+    if(i > 1 && !is.na(test_value[n])) {
+      F_center <- test_value[n]
+      F_range <- seq(max(0.05, F_center - 0.4), min(3.0, F_center + 1.5), 0.05)
+    } else {
+      F_range <- seq(0.05, 3.0, 0.05)  # Extended to F=3.0
+    }
+    
+    temp <- getYieldVsF(cur_model, species = current_species, F_range = F_range)
+    
+    # CRASH DETECTION: Yield close to zero (absolute threshold)
+    # "Close to zero" means yield < 0.01 (1% of a typical yield of 1.0)
+    yield_threshold <- 0.01  # Absolute threshold - yield must be nearly zero
+    
+    # Finding where population crashes (yield becomes nearly zero)
+    # Looking for first point after Fmsy where yield drops below threshold
+    fmsy_idx <- which.max(temp$yield)
+    post_fmsy <- temp$F > temp$F[fmsy_idx]
+    crash_candidates <- which(temp$yield < yield_threshold & post_fmsy)
+    
+    if(length(crash_candidates) > 0) {
+      crash_F[n] <- temp$F[min(crash_candidates)]
+    } else {
+      crash_F[n] <- max(F_range)  # No crash detected in range
+    }
+    
+    # Get Fmsy
+    test_value[n] <- temp$F[which.max(temp$yield)]
+    
+    # Calculate distance from crash target
+    distance_crash <- abs(crash_F[n] - FcrashTarget[n])
+    
+    # Adaptive step size based on distance to crash target
+    step_size_base <- 0.02
+    if(distance_crash > 0.5) {
+      step_size <- step_size_base  # Full step when far
+    } else if(distance_crash > 0.3) {
+      step_size <- step_size_base * 0.75  # 75% step
+    } else if(distance_crash > 0.15) {
+      step_size <- step_size_base * 0.5  # 50% step - getting close
+    } else {
+      step_size <- step_size_base * 0.25  # 25% step - very close, fine tune
+    }
+    
+    action <- "no change"
+    reason <- ""
+    
+    # Check both criteria
+    fmsy_ok <- test_value[n] >= FlevelMin[n] & test_value[n] <= FlevelMax[n]
+    fcrash_ok <- abs(crash_F[n] - FcrashTarget[n]) <= FcrashTolerance
+    
+    # CORRECTED LOGIC:
+    # Higher RL = More resilient = Crashes at HIGHER F
+    # Lower RL = Less resilient = Crashes at LOWER F
+    
+    if(!fcrash_ok) {
+      # Crash criterion takes priority
+      if(crash_F[n] < FcrashTarget[n]) {
+        # Crashes too early -> need MORE resilience -> INCREASE RL
+        new_rl <- min(RL_MAX, currentRL + step_size)
+        rep_level_new[current_species] <- new_rl
+        action <- sprintf("↑ %.3f (%.3f→%.3f)", step_size, currentRL, new_rl)
+        reason <- "[CRASH EARLY - increasing resilience]"
+        
+        # Warning if hitting maximum
+        if(new_rl == RL_MAX && currentRL == RL_MAX) {
+          reason <- paste0(reason, " ⚠️ AT MAXIMUM")
+        }
+      } else if(crash_F[n] > FcrashTarget[n] + FcrashTolerance) {
+        # Crashes too late -> need LESS resilience -> DECREASE RL
+        new_rl <- max(RL_MIN, currentRL - step_size)
+        rep_level_new[current_species] <- new_rl
+        action <- sprintf("↓ %.3f (%.3f→%.3f)", step_size, currentRL, new_rl)
+        reason <- "[CRASH LATE - decreasing resilience]"
+      }
+    } else if(!fmsy_ok) {
+      # Crash OK, now tunning Fmsy with smaller steps
+      step_size_fmsy <- step_size_base * 0.3
+      
+      if(test_value[n] > FlevelMax[n]) {
+        # Fmsy too high -> need less productivity -> DECREASE RL
+        new_rl <- max(RL_MIN, currentRL - step_size_fmsy)
+        rep_level_new[current_species] <- new_rl
+        action <- sprintf("↓ %.3f (%.3f→%.3f)", step_size_fmsy, currentRL, new_rl)
+        reason <- "[Fmsy HIGH]"
+      } else if(test_value[n] < FlevelMin[n]) {
+        # Fmsy too low -> need more productivity -> INCREASE RL
+        new_rl <- min(RL_MAX, currentRL + step_size_fmsy)
+        rep_level_new[current_species] <- new_rl
+        action <- sprintf("↑ %.3f (%.3f→%.3f)", step_size_fmsy, currentRL, new_rl)
+        reason <- "[Fmsy LOW]"
+      }
+    }
+    
+    cat(sprintf("  %s: Fmsy=%.3f [%.2f-%.2f]%s | Fcrash=%.2f [~%.2f]%s | %s %s\n",
+                current_species, 
+                test_value[n], FlevelMin[n], FlevelMax[n], ifelse(fmsy_ok, "✓", "✗"),
+                crash_F[n], FcrashTarget[n], ifelse(fcrash_ok, "✓", "✗"),
+                action, reason))
+    
+    # Track
+    tracking_df <- rbind(tracking_df, data.frame(
+      iteration = i,
+      species = current_species,
+      Fmsy = test_value[n],
+      Fcrash = crash_F[n],
+      Fcrash_target = FcrashTarget[n],
+      rep_level = rep_level_new[current_species],  # Track NEW value
+      fmsy_ok = fmsy_ok,
+      fcrash_ok = fcrash_ok,
+      both_ok = fmsy_ok & fcrash_ok
+    ))
+  }
+  
+  # Apply all changes
+  cur_model <- setBevertonHolt(cur_model, reproduction_level = rep_level_new)
+  
+  # Check convergence (both criteria)
+  fmsy_bounds <- test_value >= FlevelMin & test_value <= FlevelMax
+  fcrash_bounds <- abs(crash_F - FcrashTarget) <= FcrashTolerance
+  both_ok <- fmsy_bounds & fcrash_bounds
+  n_converged <- sum(both_ok)
+  
+  cat(sprintf("\n  → %d/7 species converged (Fmsy: %d/7, Fcrash: %d/7)\n",
+              n_converged, sum(fmsy_bounds), sum(fcrash_bounds)))
+  
+  if (all(both_ok)) {
+    cat(sprintf("\n✓ All species converged after %d iterations!\n", i))
+    break
+  }
+  
+  # Early exit if stuck
+  if(i > 30) {
+    prev_converged <- sum(tracking_df$both_ok[tracking_df$iteration == max(1, i-15)])
+    if(n_converged == prev_converged) {
+      cat("\nWarning: No progress in last 15 iterations. May need manual adjustment.\n")
+      cat("Consider adjusting FcrashTolerance or step sizes.\n")
+      break
+    }
+  }
+}
+
+# Summary
+final <- data.frame(
+  species = sppList,
+  Fmsy = test_value,
+  Fmsy_min = FlevelMin,
+  Fmsy_max = FlevelMax,
+  Fcrash = crash_F,
+  Fcrash_target = FcrashTarget,
+  Fcrash_diff = crash_F - FcrashTarget,
+  rep_level = getReproductionLevel(cur_model),
+  Fmsy_ok = test_value >= FlevelMin & test_value <= FlevelMax,
+  Fcrash_ok = abs(crash_F - FcrashTarget) <= FcrashTolerance,
+  converged = (test_value >= FlevelMin & test_value <= FlevelMax) & 
+              (abs(crash_F - FcrashTarget) <= FcrashTolerance)
+)
+
+cat("\n========== FINAL RESULTS ==========\n")
+print(final)
+```
+
+### time series yields
+
+I will check how well our modeled yields match with observed time series yields
+
+```{r}
+# Re-read with Year column
+obsy <- read.csv("obslandings.csv")
+
+# If Year column exists, just rename
+colnames(obsy) <- c("time", "sp", "value")
+
+# Fix species names
+obsy$sp <- tolower(obsy$sp)
+obsy$sp[obsy$sp == "silverbream"] <- "white_bream"
+```
+
+```{r}
+# Set up gears (one per species)
+sim1 <- project(cur_model, t_max = 300, dt = 0.2, effort = initial_effort)
+
+current_gear <- gear_params(sim1@params)
+current_gear$gear <- current_gear$species
+gear_params(sim1@params) <- current_gear
+sim1@params <- setParams(sim1@params)
+
+
+# Read F data with confidence intervals
+f_data <- read.csv("CLF_1990_2023matrix_ci.csv")  
+
+years_data <- f_data$Year  
+
+# Create matrices
+main_species <- c("Bream", "Perch", "Pikeperch", "Roach", "White_bream")
+f_main <- as.matrix(f_data[, main_species])
+f_low <- as.matrix(f_data[, paste0(main_species, "_low")])  
+f_up <- as.matrix(f_data[, paste0(main_species, "_up")])
+
+# Set dimnames properly
+rownames(f_main) <- as.character(years_data)
+rownames(f_low) <- as.character(years_data)
+rownames(f_up) <- as.character(years_data)
+colnames(f_main) <- tolower(main_species)
+colnames(f_low) <- tolower(main_species)
+colnames(f_up) <- tolower(main_species)
+
+# Adding missing species
+f_main_complete <- cbind(small_fish = rep(0, nrow(f_main)), 
+                         ruffe = rep(0, nrow(f_main)), 
+                         f_main)
+f_low_complete <- cbind(small_fish = rep(0, nrow(f_low)), 
+                        ruffe = rep(0, nrow(f_low)), 
+                        f_low)
+f_up_complete <- cbind(small_fish = rep(0, nrow(f_up)), 
+                       ruffe = rep(0, nrow(f_up)), 
+                       f_up)
+
+# Setting rownames for complete matrices
+rownames(f_main_complete) <- as.character(years_data)
+rownames(f_low_complete) <- as.character(years_data)
+rownames(f_up_complete) <- as.character(years_data)
+
+# 2. Run to steady state
+sim2 <- project(sim1@params, effort = initial_effort, t_max = 300, dt = 0.1,
+                initial_n = sim1@n[300,,], initial_npp = sim1@n_pp[300,])
+
+# Reordering and continuing as before
+species_order <- species_params(sim2@params)$species
+f_main_ordered <- f_main_complete[, species_order]
+f_low_ordered <- f_low_complete[, species_order]
+f_up_ordered <- f_up_complete[, species_order]
+
+# Converting to effort
+relative_effort <- sweep(f_main_ordered, 2, gear_params(sim2@params)$catchability, "/")
+relative_effort_low <- sweep(f_low_ordered, 2, gear_params(sim2@params)$catchability, "/")
+relative_effort_up <- sweep(f_up_ordered, 2, gear_params(sim2@params)$catchability, "/")
+# exclude small fish and ruffe
+# Set NaN values to 0 but keep all species
+relative_effort[is.nan(relative_effort)] <- 0
+relative_effort_low[is.nan(relative_effort_low)] <- 0
+relative_effort_up[is.nan(relative_effort_up)] <- 0
+
+
+# Add ramp-up with fixed function
+# Define the add_ramp_up function
+add_ramp_up <- function(effort_matrix) {
+  firstRecordedEffort <- effort_matrix[1,]
+  
+  # Create numeric time sequence
+  ramp_years <- 1893:1991
+  data_years <- as.numeric(rownames(effort_matrix))
+  
+  initial_effort1 <- matrix(0, nrow = length(ramp_years), ncol = ncol(effort_matrix),
+                           dimnames = list(as.character(ramp_years), colnames(effort_matrix)))
+  
+  for (i in 1:ncol(effort_matrix)) {
+    initial_effort1[, i] <- seq(from = 0, to = firstRecordedEffort[i], 
+                               length.out = nrow(initial_effort1))
+  }
+  
+  # Ensure rownames are character (will be converted to numeric by mizer)
+  combined_effort <- rbind(initial_effort1, effort_matrix)
+  rownames(combined_effort) <- as.character(c(ramp_years, data_years))
+  
+  return(combined_effort)
+}
+
+# Now I can use it
+relative_effort_full <- add_ramp_up(relative_effort)
+relative_effort_low_full <- add_ramp_up(relative_effort_low)
+relative_effort_up_full <- add_ramp_up(relative_effort_up)
+
+# Running simulations
+sim3_main <- project(sim2@params, effort = relative_effort_full, 
+                     dt = 0.1, t_save = 1,
+                     initial_n = sim2@n[300,,], 
+                     initial_npp = sim2@n_pp[300,])
+
+sim3_low <- project(sim2@params, effort = relative_effort_low_full, 
+                    dt = 0.1, t_save = 1,
+                    initial_n = sim2@n[300,,], 
+                    initial_npp = sim2@n_pp[300,])
+
+sim3_up <- project(sim2@params, effort = relative_effort_up_full, 
+                   dt = 0.1, t_save = 1,
+                   initial_n = sim2@n[300,,], 
+                   initial_npp = sim2@n_pp[300,])
+
+# Preparing yield data
+y_main <- getYield(sim3_main) %>% melt() %>% mutate(scenario = "main")
+y_low <- getYield(sim3_low) %>% melt() %>% mutate(scenario = "low")
+y_up <- getYield(sim3_up) %>% melt() %>% mutate(scenario = "up")
+
+# Combine all scenarios
+y_all <- rbind(y_main, y_low, y_up)
+y_wide <- reshape(y_all, idvar = c("time", "sp"), timevar = "scenario", direction = "wide")
+colnames(y_wide) <- c("time", "sp", "main", "low", "up")
+
+# Create plot with ribbon
+ggplot(y_wide) + 
+  geom_ribbon(aes(x = time, ymin = low, ymax = up, fill = sp), alpha = 0.3) +
+  geom_line(aes(x = time, y = main, colour = sp), size = 1) +
+  geom_point(data = obsy, aes(x = time, y = value, colour = sp), size = 2) +
+  facet_wrap(~sp, scales = "free_y") +
+  scale_y_continuous(name = "Yield [g/m-2/year]") +
+  xlim(1992, 2021) +
+  labs(title = "Model yield with F confidence intervals vs observations") +
+  theme_minimal() +
+  theme(legend.position = "none")  # Remove legend since facets show species
+```
+
+plot used in supplements
+
+```{r}
+# Filter out small fish and ruffe
+y_wide_filtered <- y_wide %>%
+  filter(!sp %in% c("small_fish", "ruffe"))
+obsy_filtered <- obsy %>%
+  filter(!sp %in% c("small_fish", "ruffe"))
+
+# Set panel order
+sp_order <- c("bream", "white_bream", "roach", "perch", "pikeperch")  
+y_wide_filtered$sp <- factor(y_wide_filtered$sp, levels = sp_order)
+obsy_filtered$sp   <- factor(obsy_filtered$sp,   levels = sp_order)
+
+# Calculate Spearman correlation (filtered data)
+r_square <- y_wide_filtered %>%
+  inner_join(obsy_filtered, by = c("time", "sp")) %>%
+  filter(!is.na(main), !is.na(value)) %>%
+  group_by(sp) %>%
+  summarise(
+    spearman = cor(main, value, method = "spearman"),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    label = paste0("ρ = ", round(spearman, 3)),
+    time = 2018,
+    y = Inf
+  )
+
+# Model yield with F confidence intervals vs observations
+timeyield <- ggplot(y_wide_filtered) + 
+  geom_ribbon(aes(x = time, ymin = low, ymax = up), alpha = 0.3) +
+  geom_line(aes(x = time, y = main), linewidth = 1) +
+  geom_hline(yintercept = -Inf, linewidth = 0.5) +  
+  geom_vline(xintercept = -Inf, linewidth = 0.5) +
+  geom_point(data = obsy_filtered, aes(x = time, y = value), size = 2) +
+  geom_text(data = r_square, 
+            aes(x = time, y = y, label = label), 
+            vjust = 1, hjust = 0.9, size = 4, fontface = "bold") +
+  facet_wrap(~sp, scales = "free_y", ncol = 2, labeller = as_labeller(function(x) gsub("_", " ", x))) +
+  scale_y_continuous(
+    name = "Yield (g/m²/year)",
+    expand = expansion(mult = c(0.05, 0.15))
+  ) +
+  xlim(1992, 2021) +
+ labs(x = "Time (year)") + 
+ theme_classic() +
+  theme(
+    text = element_text(size = 17, family = "gillsans"),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", size = 12, hjust = 0),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 14),
+    axis.title = element_text(size = 14),
+    axis.line = element_blank(),
+    legend.position = "none"
+  )
+
+# ggsave("timeyield.tiff", timeyield, width = 8, height = 7, dpi = 600, bg = "white")
+```
+
+### Best models
+
+I ran all calibration steps above and saved 40 different calibrated models with slightly different kappa and external mortality values. I then saved their data — fish percent in predator diets, feeding level of the main predator, and the strength of the correlation between modeled and observed time series — for comparison, in order to evaluate which five models are the best for the analysis.
+
+```{r}
+models <- read.csv("models.csv")
+
+# Method 1: Simple Ranking (lower is better)
+models$rank_fish <- rank(-models$fish_in_pikeperch_diet)
+models$rank_feeding <- rank(-models$Feeding_level_of_pikeperch)
+models$rank_corr <- rank(-models$Sum_of_Spearman_corr)
+models$rank_mean_corr <- rank(-models$Mean_corr_Spearman)
+
+models$total_rank <- models$rank_fish + models$rank_feeding + models$rank_corr + models$rank_mean_corr
+
+# Method 2: Normalized Scoring (0-1 scale)
+normalize <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+
+models$norm_fish <- normalize(models$fish_in_pikeperch_diet)
+models$norm_feeding <- normalize(models$Feeding_level_of_pikeperch)
+models$norm_corr_sum <- normalize(models$Sum_of_Spearman_corr)
+models$norm_corr_mean <- normalize(models$Mean_corr_Spearman)
+
+models$avg_normalized <- (models$norm_fish + models$norm_corr_sum) / 2
+
+# Method 3: Weighted Score (equal weights)
+models$weighted_equal <- (models$norm_fish + models$norm_feeding + models$norm_corr_sum + models$norm_corr_mean) / 4
+
+# Method 4: Weighted Score (different weights)
+# Example: fish_diet=0.4, feeding_level=0.3, correlation=0.3
+models$weighted_custom <- models$norm_fish * 0.5 +
+                        models$norm_corr_sum * 0.5
+
+# Display results sorted by different methods
+cat("\n=== TOP 5 MODELS BY RANKING METHOD ===\n")
+print(models[order(models$total_rank), c("Nr", "Kappa", "Ext_mort", "Ext_Mort_slope", "fish_in_pikeperch_diet", "Feeding_level_of_pikeperch", "Sum_of_Spearman_corr", "Mean_corr_Spearman", "total_rank")][1:8,])
+
+cat("\n=== TOP 5 MODELS BY NORMALIZED AVERAGE ===\n")
+print(models[order(-models$avg_normalized), c("Nr", "Kappa", "Ext_mort", "Ext_Mort_slope", "fish_in_pikeperch_diet", "Feeding_level_of_pikeperch", "Sum_of_Spearman_corr", "Mean_corr_Spearman", "total_rank")][1:8,])
+
+cat("\n=== TOP 5 MODELS BY WEIGHTED CUSTOM ===\n")
+print(models[order(-models$weighted_custom), c("Nr", "Kappa", "Ext_mort", "Ext_Mort_slope", "fish_in_pikeperch_diet", "Feeding_level_of_pikeperch", "Sum_of_Spearman_corr", "Mean_corr_Spearman", "total_rank")][1:8,])
+
+```
+
+Now I will use these five models to show a range in the calibration evaluation plots.
+
+I load all five already-calibrated models to make plots with ranges
+
+```{r}
+models <- list(
+  M3  = read_rds("M6_kappa8_lambda2.05extMort01_0.333.rds"),
+  M4  = read_rds("M4_kappa7_lambda2.05extMort01_0.25.rds"),
+  M5  = read_rds("M5_kappa7_lambda2.05extMort01_0.333.rds"),
+  M12 = read_rds("M12_kappa7_lambda2.05extMort02_0.333.rds"),
+  M13 = read_rds("M7_kappa9_lambda2.05extMort01_0.333.rds")
+)
+```
+
+### Calibration Results
+
+Model properties exploration
+
+# Yields
+
+```{r}
+library(purrr)
+
+species_list <- c(
+  "small_fish"  = "small_fish",
+  "ruffe"       = "ruffe",
+  "bream"       = "bream",
+  "white_bream" = "white_bream",
+  "roach"       = "roach",
+  "perch"       = "perch",
+  "pikeperch"   = "pikeperch"
+)
+
+# F_range per species 
+f_ranges <- list(
+  small_fish  = seq(0,    1.5, 0.01),
+  ruffe       = seq(0.1,  1.5, 0.01),
+  white_bream = seq(0.01, 1.5, 0.01),
+  roach       = seq(0.01, 1.5, 0.01),
+  perch       = seq(0,    1.5, 0.01),
+  bream       = seq(0.01, 1.5, 0.01),
+  pikeperch   = seq(0,    1.5, 0.01)
+)
+
+plot_data <- imap_dfr(models, function(cur_model, model_name) {
+  imap_dfr(species_list, function(sp_label, sp) {
+    plotYieldVsF(cur_model, species = sp, F_range = f_ranges[[sp]])$data %>%
+      mutate(Species = sp_label, Model = model_name)
+  })
+})
+
+plot_data$Species <- factor(plot_data$Species, levels = unname(species_list))
+
+yields <- ggplot(plot_data, aes(x = F, y = yield, group = Model)) +
+  geom_line(linewidth = 1, colour = "grey30") +
+  geom_hline(yintercept = -Inf, linewidth = 0.5) +
+  geom_vline(xintercept = -Inf, linewidth = 0.5) +
+  facet_wrap(~ Species, scales = "free_y", ncol = 2, labeller = as_labeller(function(x) gsub("_", " ", x))) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 3),
+                     expand = expansion(mult = c(0.05, 0.05))) +
+  scale_x_continuous(expand = expansion(mult = c(0.02, 0.02))) +
+  labs(x = "Fishing mortality (1/yr)",
+       y = "Yield (g/m²/yr)") +
+  theme_classic() +
+  theme(
+    text = element_text(size = 17, family = "gillsans"),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", size = 12, hjust = 0),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 14),
+    axis.title = element_text(size = 14),
+    axis.line = element_blank(),
+    legend.position = "none"
+  )
+
+# ggsave("yields.tiff", yields, width = 7, height = 6, dpi = 600, bg = "white")
+
+# extracting information for Fmsy plots
+peak_values <- plot_data %>%
+  group_by(Species, Model) %>%
+  slice_max(yield, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(Species, Model, F_peak = F, yield_peak = yield) %>%
+  arrange(Species, Model)
+
+peak_values
+```
+
+# Fmsy
+
+```{r}
+# Create the dataframe
+fmsy_df <- data.frame(
+  Species = c("bream", "perch", "pikeperch", "roach", "white_bream", 
+              "small_fish", "ruffe"),
+  mean = c(0.144, 0.122, 0.141, 0.204, 0.136, NA, NA),
+  low = c(0.102, 0.086, 0.097, 0.145, 0.093, NA, NA),
+  up = c(0.203, 0.177, 0.197, 0.284, 0.200, NA, NA)
+)
+
+# 1. Summarise model F_MSY (= F_peak) across the 5 models per species
+fmsy_model_ci <- peak_values %>%
+  group_by(Species) %>%
+  summarise(
+    F_MSY_model = mean(F_peak),
+    model_low   = min(F_peak),          # or quantile(F_peak, 0.025)
+    model_up    = max(F_peak),          # or quantile(F_peak, 0.975)
+    .groups = "drop"
+  )
+
+cur_model <- models$M5
+# 2. Lookup w_max per species
+species_lookup <- data.frame(
+  Species       = c("small_fish", "ruffe", "bream", "white_bream", "roach", "perch", "pikeperch"),
+  w_max         = cur_model@species_params$w_max
+)
+
+# 3. Combine literature + model + w_max
+fmsy_all <- fmsy_df %>%                      # literature: Species, mean, low, up
+  left_join(fmsy_model_ci, by = "Species") %>%
+  left_join(species_lookup, by = "Species")
+
+print(fmsy_all)
+
+# 4. Plot: w_max on x, both sources with their error bars
+
+off <- 1.04  # multiplicative nudge; tune to taste
+
+fmsy <- ggplot(fmsy_all, aes(x = w_max)) +
+  # literature: shifted left
+  geom_errorbar(aes(x = w_max / off, ymin = low, ymax = up),
+                width = 100, color = "black", alpha = 0.5) +
+  geom_point(aes(x = w_max / off, y = mean, color = Species,
+                 shape = "Single species assessment"),
+             size = 6) +
+  # model: shifted right
+  geom_errorbar(aes(x = w_max * off, ymin = model_low, ymax = model_up),
+                width = 100, color = "grey40", alpha = 0.5) +
+  geom_point(aes(x = w_max * off, y = F_MSY_model, color = Species,
+                 shape = "Size spectrum model"),
+             size = 6) +
+  scale_y_continuous(limits = c(0, NA), breaks = seq(0, 0.6, 0.1)) +
+  scale_color_manual(values = c("small_fish" = "#FCC300",
+                                "ruffe" = "#44AA99", 
+                                "white_bream" = "#661100",
+                                "roach" = "#AA4499",
+                                "perch" = "#2166ac",
+                                "bream" = "#b2182b",
+                                "pikeperch" = "#93AA00"),
+                     breaks = c("small_fish", "ruffe", "bream", "white_bream",
+                                "roach", "perch", "pikeperch"),
+                     labels = function(x) gsub("_", " ", x)) +
+  scale_shape_manual(values = c("Single species assessment" = 15,
+                                "Size spectrum model" = 16),
+                     breaks = c("Single species assessment", "Size spectrum model"),
+                     labels = c("single species assessment", "size spectrum model")) +
+  labs(x = expression(W[max]~"(g)"),
+       y = expression(F[MSY]~"(year"^-1*")"),
+       color = "Species",
+       shape = "Source") +
+  theme_classic() +
+  theme(
+    legend.position = "right",
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.text = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+# ggsave("fmsy.tiff", fmsy, width = 7, height = 4, dpi = 600, bg = "white")
+```
+
+# Biomass
+
+```{r}
+# w_max per species (same across models; take from any one) 
+species_wmax <- data.frame(
+  Species = models$M5@species_params$species,
+  w_max   = models$M5@species_params$w_max
+)
+
+# Observed biomass with upper/lower bounds (one set, from any model)
+obs_biomass <- tibble(
+  Species  = models$M5@species_params$species,
+  obs      = models$M5@species_params$biomass_observed,
+  obs_low  = models$M5@species_params$biomass_observed_low,
+  obs_up   = models$M5@species_params$biomass_observed_up
+) %>%
+  filter(!is.na(obs)) %>%
+  left_join(species_wmax, by = "Species")
+
+#  Modelled biomass across all 5 models
+model_biomass <- imap_dfr(models, function(m, model_name) {
+  b <- plotBiomassVsSpecies(m)$data
+  b %>%
+    filter(Type == "Model") %>%
+    mutate(Model = model_name)
+}) %>%
+  group_by(Species) %>%
+  summarise(model_min = min(Biomass),
+            model_max = max(Biomass),
+            model_med = median(Biomass),
+            .groups = "drop") %>%
+  left_join(species_wmax, by = "Species")
+
+# Order species by w_max consistently across both layers
+lvl <- species_wmax %>% arrange(w_max) %>% pull(Species)
+obs_biomass   <- mutate(obs_biomass,   Species = factor(Species, levels = lvl))
+model_biomass <- mutate(model_biomass, Species = factor(Species, levels = lvl))
+
+biomass1 <- ggplot() +
+  # Observed range (error bar) + point
+  geom_errorbar(data = obs_biomass,
+                aes(x = w_max, ymin = obs_low, ymax = obs_up, color = Species),
+                width = 0, linewidth = 2, alpha = 0.5,
+                position = position_nudge(x = -0.04)) +
+  geom_point(data = obs_biomass,
+             aes(x = w_max, y = obs, color = Species, shape = "Observation"),
+             size = 4, position = position_nudge(x = -0.04)) +
+  # Modelled range across 5 models (error bar) + median point
+  geom_errorbar(data = model_biomass,
+                aes(x = w_max, ymin = model_min, ymax = model_max, color = Species),
+                width = 0, linewidth = 2, alpha = 0.5,
+                position = position_nudge(x = 0.02)) +
+  geom_point(data = model_biomass,
+             aes(x = w_max, y = model_med, color = Species, shape = "Model"),
+             size = 4, position = position_nudge(x = 0.02)) +
+  scale_x_log10() +
+  scale_y_log10() +
+  scale_color_manual(values = c("small_fish" = "#FCC300", "ruffe" = "#44AA99",
+                                "white_bream" = "#661100", "roach" = "#AA4499",
+                                "perch" = "#2166ac", "bream" = "#b2182b",
+                                "pikeperch" = "#93AA00"),
+                     breaks = c("small_fish", "ruffe", "bream", "white_bream",
+                                "roach", "perch", "pikeperch"),
+                     labels = function(x) gsub("_", " ", x)) +
+  scale_shape_manual(values = c("Observation" = 15, "Model" = 16),
+                     breaks = c("Observation", "Model"),
+                     labels = c("observation", "model")) +
+  labs(x = "Maximum size (g)", y = "Biomass (g/m²)",
+       color = "Species", shape = "Type") +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 14),
+    axis.title = element_text(size = 14),
+    legend.position = "right",
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.text = element_text(size = 14)
+  )
+
+# ggsave("biomass1.tiff", biomass1, width = 6, height = 4, dpi = 600, bg = "white")
+```
+
+# Spectrum and feeding level
+
+```{r}
+# species size limits per model
+get_limits <- function(m) {
+  sp <- species_params(m)
+  tibble(Species = sp$species, w_min = sp$w_min, w_max = sp$w_max)
+}
+
+# Spectrum
+spectrum_data <- imap_dfr(models, function(m, model_name) {
+  df <- plotSpectra(m, power = 1, return_data = TRUE)
+  if ("Spectra" %in% names(df)) df <- rename(df, Species = Spectra)
+  df %>% mutate(Model = model_name)
+}) %>%
+  mutate(group = interaction(Species, Model))
+
+# Feeding level
+feeding_data <- imap_dfr(models, function(m, model_name) {
+  lims <- get_limits(m)
+  getFeedingLevel(m) %>%
+    as.data.frame() %>%
+    rownames_to_column("Species") %>%
+    pivot_longer(-Species, names_to = "w", values_to = "value") %>%
+    mutate(w = as.numeric(w), Model = model_name) %>%
+    left_join(lims, by = "Species") %>%
+    filter(w >= w_min, w <= w_max)
+}) %>%
+  mutate(group = interaction(Species, Model))
+
+
+plot_b <- ggplot(feeding_data, aes(x = w, y = value, color = Species, group = group)) +
+  geom_line(linewidth = 1, alpha = 0.6) +
+  geom_hline(yintercept = 0.2, linetype = "dashed", color = "red", linewidth = 1) +
+  scale_x_log10() +
+  scale_y_continuous(limits = c(0, 1), breaks = seq(0, 1, 0.5)) +
+  scale_color_manual(values = c("small_fish" = "#FCC300", "ruffe" = "#44AA99",
+                                "white_bream" = "#661100", "roach" = "#AA4499",
+                                "perch" = "#2166ac", "bream" = "#b2182b",
+                                "pikeperch" = "#93AA00"),
+                     breaks = c("small_fish", "ruffe", "bream", "white_bream",
+                                "roach", "perch", "pikeperch"),
+                     labels = function(x) gsub("_", " ", x)) +
+  labs(x = "Size (g)", y = "Feeding level", color = "Species") +
+  theme_classic() +
+  theme(legend.position = "right",
+        legend.title = element_text(size = 14, face = "bold"),
+        legend.text = element_text(size = 12),
+        axis.text = element_text(size = 12),
+        axis.title = element_text(size = 15))
+
+plot_a <- ggplot(spectrum_data, aes(x = w, y = value, color = Species,
+                                    group = group, linetype = Species)) +
+  geom_line(linewidth = 1, alpha = 0.6) +
+  scale_x_log10() + scale_y_log10() +
+  scale_color_manual(values = c("Resource" = "grey50", "small_fish" = "#FCC300", "ruffe" = "#44AA99",
+                                "white_bream" = "#661100", "roach" = "#AA4499",
+                                "perch" = "#2166ac", "bream" = "#b2182b",
+                                "pikeperch" = "#93AA00"),
+                     breaks = c("Resource", "small_fish", "ruffe", "bream", "white_bream",
+                                "roach", "perch", "pikeperch"),
+                     labels = function(x) gsub("_", " ", sub("Resource", "resource", x))) +
+  scale_linetype_manual(values = c("Resource" = "dashed", "small_fish" = "solid", "ruffe" = "solid",
+                                   "white_bream" = "solid", "roach" = "solid",
+                                   "perch" = "solid", "bream" = "solid",
+                                   "pikeperch" = "solid"),
+                        breaks = c("Resource", "small_fish", "ruffe", "bream", "white_bream",
+                                   "roach", "perch", "pikeperch"),
+                        labels = function(x) gsub("_", " ", sub("Resource", "resource", x))) +
+  labs(x = "Size (g)", y = "Biomass density (g/m²)", color = "Species", linetype = "Species") +
+  theme_classic() +
+  theme(legend.position = "right",
+        legend.title = element_text(size = 14, face = "bold"),
+        legend.text = element_text(size = 14),
+        axis.text = element_text(size = 14),
+        axis.title = element_text(size = 15))
+
+spectra <- plot_a + (plot_b + theme(legend.position = "none")) +
+  plot_layout(ncol = 2, guides = "collect") +
+  plot_annotation(tag_levels = "a", tag_suffix = ")")
+
+# ggsave("spectra.tiff", spectra, width = 10, height = 4, dpi = 600, bg = "white")
+```
+
+# Growth curves
+
+Checking the available size and age data across species
+
+```{r}
+# Read and select necessary columns
+length_at_age <- read.csv("size_at_age.csv") %>%
+  select(species = spp_name_lt, age = age, length = total_length, weight = fish_weight, std_length, year) %>% 
+  mutate(species = recode(species,
+                          "Eserys" = "perch",
+                          "Karsis" = "bream",
+                          "Kuoja" = "roach",
+                          "Starkis" = "pikeperch"))
+
+
+# Fit a model and fill missing values for each species
+length_at_age <- length_at_age %>%
+  group_by(species) %>%
+  group_modify(~ {
+    # Fit linear model if there are no missing values in total_length
+    model <- lm(length ~ std_length, data = .x)
+    
+    # Extract coefficients
+    intercept <- coef(model)[1]
+    slope <- coef(model)[2]
+    
+    # Fill missing total_length
+    .x <- .x %>%
+      mutate(length = ifelse(is.na(length),
+                                   intercept + (std_length * slope),
+                                   length))
+    return(.x)
+  }) %>%
+  ungroup()
+ 
+
+colSums(is.na(length_at_age))
+
+# length_at_age <- length_at_age %>% filter(year >= 1980 & year <=2000)
+
+# Let's check the plot
+ggplot(data = length_at_age) + 
+  geom_point(mapping = aes(x = age, y = length, color=species), position = "jitter", size = 2)
+
+length_at_age <- length_at_age %>% filter(length <= 100)
+
+# Let's check the plot now
+ggplot(data = length_at_age) + 
+  geom_point(mapping = aes(x = age, y = weight, color=species), position = "jitter", size = 2)
+
+# Prepare observed data
+obs_data <- length_at_age %>%
+  filter(!is.na(weight), !is.na(age)) %>%
+  rename(Species = species)  # ADD THIS LINE to match growth_data
+
+# Get max observed age per species
+max_age_data <- obs_data %>%
+  group_by(Species) %>%  # Change to Species
+  summarise(max_age = max(age, na.rm = TRUE))
+```
+
+Model growth curves vs. empirical data
+
+```{r}
+species_order <- c("bream", "white_bream", "roach", "perch", "pikeperch")
+
+# Extract growth curves from all 5 models
+growth_data <- imap_dfr(models, function(m, model_name) {
+  plotGrowthCurves(m, return_data = TRUE) %>%   # cols: Age, value, Species
+    mutate(Model = model_name)
+}) %>%
+  filter(Species %in% species_order) %>%
+  mutate(Species = factor(Species, levels = species_order),
+         group   = interaction(Species, Model))
+
+
+# Pull w_mat / w_max / age_mat from each model's species_params
+ref_data <- imap_dfr(models, function(m, model_name) {
+  sp <- species_params(m)
+  tibble(Species = sp$species,
+         w_mat   = sp$w_mat,
+         w_max   = sp$w_max,
+         age_mat = if (!is.null(sp$age_mat)) sp$age_mat else NA_real_)
+}) %>%
+  filter(Species %in% species_order) %>%
+  group_by(Species) %>%
+  summarise(w_mat = mean(w_mat, na.rm = TRUE),
+            w_max = mean(w_max, na.rm = TRUE),
+            age_mat = mean(age_mat, na.rm = TRUE),
+            .groups = "drop") %>%
+  mutate(Species = factor(Species, levels = species_order))
+
+# Max age per species (one line per facet)
+max_age_data <- max_age_data %>%
+  filter(Species %in% species_order) %>%
+  mutate(Species = factor(Species, levels = species_order))
+
+# obs_data ordering
+obs_data <- obs_data %>%
+  filter(Species %in% species_order) %>%
+  mutate(Species = factor(Species, levels = species_order))
+
+# --- Plot ---
+growth <- ggplot() +
+  geom_point(data = obs_data,
+             aes(x = age, y = weight, color = Species),
+             alpha = 0.3, position = position_jitter(width = 0.3), size = 1.5) +
+  geom_line(data = growth_data,
+            aes(x = Age, y = value, color = Species, group = group),
+            linewidth = 1, alpha = 0.6) +
+  geom_hline(data = ref_data, aes(yintercept = w_mat),
+             linetype = "dashed", color = "black", alpha = 0.5) +
+  geom_hline(data = ref_data, aes(yintercept = w_max),
+             linetype = "dotted", color = "black", alpha = 0.5) +
+  geom_vline(data = ref_data, aes(xintercept = age_mat),
+             linetype = "dashed", color = "black", alpha = 0.5) +
+  geom_vline(data = max_age_data, aes(xintercept = max_age),
+             linetype = "dotted", color = "red", alpha = 0.5) +
+  geom_hline(yintercept = -Inf, linewidth = 0.5) +
+  geom_vline(xintercept = -Inf, linewidth = 0.5) +
+  scale_color_manual(values = c("white_bream" = "#661100",
+                                "roach"       = "#AA4499",
+                                "perch"       = "#2166ac",
+                                "bream"       = "#b2182b",
+                                "pikeperch"   = "#93AA00")) +
+  labs(x = "Age (years)", y = "Fish weight (g)", color = "Species") +
+  facet_wrap(~Species, scales = "free_y", ncol = 2, labeller = as_labeller(function(x) gsub("_", " ", x))) +
+  theme_classic() +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", hjust = 0, size = 11),
+    legend.position = "none",
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+growth
+
+growth_data %>%
+  group_by(Species, Age) %>%
+  summarise(spread = max(value) - min(value), .groups = "drop") %>%
+  group_by(Species) %>%
+  summarise(max_spread = max(spread))
+
+# ggsave("growth.tiff", growth, width = 7, height = 6, dpi = 600, bg = "white")
+```
+
+# Diet
+
+```{r}
+cur_model <- read_rds("M5_kappa7_lambda2.05extMort01_0.333.rds")
+
+# Get the diet data
+diet_plot <- plotDiet(cur_model, 
+                      species = c("small_fish", "ruffe", "bream", "white_bream", 
+                                  "roach", "perch", "pikeperch"))
+diet_data <- diet_plot$data
+
+# Create custom plot with species colors and fixed x-axis
+diet <- ggplot(diet_data, aes(x = size, y = Proportion, fill = Prey)) +
+  geom_area() +
+  facet_wrap(~ Predator, ncol = 2, labeller = as_labeller(function(x) gsub("_", " ", x))) +
+  scale_x_log10() +
+  scale_fill_manual(
+  values = c("small_fish" = "#FCC300",
+             "ruffe" = "#44AA99",
+             "white_bream" = "#661100",
+             "roach" = "#AA4499",
+             "perch" = "#2166ac",
+             "bream" = "#b2182b",
+             "pikeperch" = "#93AA00",
+             "Resource" = "#DDCC77",
+             "External" = "grey30"),
+  breaks = c("Resource", "small_fish", "ruffe", "bream", "white_bream", "roach", "perch", "pikeperch","External"),  # legend order
+  labels = c("resource", "small fish", "ruffe", "bream", "white bream", "roach", "perch", "pikeperch","External")
+) +
+  labs(x = "Predator size (g)",
+       y = "Proportion of diet",
+       fill = "Prey") +
+  theme_classic() +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", hjust = 0, size = 11),
+    legend.position = "right",
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.text = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+# ggsave("diet1.tiff", diet, width = 7, height = 6, dpi = 600, bg = "white")
+```
+
+# Mortality
+
+```{r}
+# Get death data
+death_plot <- plotDeath(cur_model, 
+                        species = c("small_fish", "ruffe", "bream", "white_bream", 
+                                    "roach", "perch", "pikeperch"), proportion = F)
+death_data <- death_plot$data
+
+death_data$Prey <- factor(death_data$Prey,
+                          levels = c("small_fish", "ruffe", "bream", "white_bream",
+                                     "roach", "perch", "pikeperch"))
+# Create plot with stacked areas
+death <- ggplot(death_data, aes(x = w, y = value, fill = Legend)) +
+  geom_area(position = "stack") +
+  facet_wrap(~ Prey, ncol = 2, labeller = as_labeller(function(x) gsub("_", " ", x))) +
+  scale_x_log10() +
+  scale_fill_manual(values = c("small_fish" = "#FCC300",
+                                "ruffe" = "#44AA99", 
+                                "white_bream" = "#661100",
+                                "roach" = "#AA4499",
+                                "perch" = "#2166ac",
+                                "bream" = "#b2182b",
+                                "pikeperch" = "#93AA00",
+                                "Resource" = "#DDCC77",
+                                "External" = "grey",
+                                "Fishing" = "red"),
+  breaks = c("Resource", "small_fish", "ruffe", "bream", "white_bream", "roach", "perch", "pikeperch", "External", "Fishing"),  # legend order
+  labels = c("resource", "small fish", "ruffe", "bream", "white bream", "roach", "perch", "pikeperch", "external", "fishing")
+) +
+  labs(x = "Size (g)",
+       y = "Mortality rate (year⁻¹)",
+       fill = "Cause") +
+  theme_classic() +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", hjust = 0, size = 11),
+    legend.position = "right",
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.text = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+# ggsave("death1.tiff", death, width = 7, height = 6, dpi = 600, bg = "white")
+```
+
+# Biomass dynamics under three fishing effort scenarios
+
+species sensitivity
+
+```{r}
+# effort levels
+initial_effort <- c(0, 0, 0.111, 0.006, 0.131, 0.077, 0.083)
+
+effort_multipliers <- list(
+  "0.0"            = 0,
+  "initial effort" = 1,
+  "triple effort"  = 3
+)
+
+t_max <- 100
+
+# Project every model at every effort level, extract biomass
+get_biomass_df <- function(params, effort_mult, effort_label, model_name) {
+  sim <- project(params, effort = initial_effort * effort_mult, t_max = t_max)
+
+  getBiomass(sim) %>%
+    as.data.frame() %>%
+    rownames_to_column("Year") %>%
+    mutate(Year = as.numeric(Year)) %>%
+    pivot_longer(-Year, names_to = "Species", values_to = "Biomass") %>%
+    mutate(Effort = effort_label, Model = model_name)
+}
+
+all_data <- imap_dfr(models, function(params, model_name) {
+  imap_dfr(effort_multipliers, function(mult, label) {
+    get_biomass_df(params, mult, label, model_name)
+  })
+})
+
+# Summarize across the 5 models: median + min-max
+summary_data <- all_data %>%
+  group_by(Effort, Species, Year) %>%
+  summarise(
+    Biomass_med = median(Biomass),
+    Biomass_min = min(Biomass),
+    Biomass_max = max(Biomass),
+    .groups = "drop"
+  ) %>%
+  mutate(Effort = factor(Effort,
+                         levels = c("0.0", "initial effort", "triple effort")))
+
+# Plot: 3 panels by effort, ribbon = min-max across models
+species_colors <- c(
+  "small_fish" = "#FCC300",
+  "ruffe" = "#44AA99", 
+  "bream" = "#b2182b",
+  "white_bream" = "#661100",
+  "roach" = "#AA4499",
+  "perch" = "#2166ac",
+  "pikeperch" = "#93AA00"
+)
+
+species_order <- c("small_fish", "ruffe", "bream", "white_bream",
+                   "roach", "perch", "pikeperch")
+
+summary_data$Species <- factor(summary_data$Species, levels = species_order)
+
+biomass_time <- ggplot(summary_data, aes(x = Year, color = Species, fill = Species)) +
+  geom_ribbon(aes(ymin = Biomass_min, ymax = Biomass_max),
+              alpha = 0.2, color = NA) +
+  geom_line(aes(y = Biomass_med), linewidth = 1) +
+  facet_wrap(~ Effort, ncol = 1, scales = "free_y",
+             labeller = labeller(Effort = c("0.0" = "a) F reduced to 0",
+                                            "initial effort" = "b) F stable",
+                                            "triple effort" = "c) F increased 3 times"))) +
+  coord_cartesian(xlim = c(0, 100)) +
+  scale_color_manual(values = species_colors,
+                   labels = c(small_fish = "small fish",
+                              white_bream = "white bream")) +
+  scale_fill_manual(values = species_colors,
+                  labels = c(small_fish = "small fish",
+                             white_bream = "white bream")) +
+  labs(x = "Time (years)", y = "Biomass (g)",
+       color = "Species", fill = "Species") +
+  theme_classic() +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold", size = 12, hjust = 0),
+    legend.position = "right",
+    legend.title = element_text(size = 14, face = "bold"),
+    legend.text = element_text(size = 12),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14),
+    panel.border = element_blank(),
+    axis.line.x = element_line(linewidth = 0.5, color = "black"),
+    axis.line.y = element_line(linewidth = 0.5, color = "black")
+  )
+
+# ggsave("bio_timeS.tiff", biomass_time, width = 6, height = 6, dpi = 600)
+```

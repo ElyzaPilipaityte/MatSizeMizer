@@ -1,0 +1,8 @@
+species,funcgr,a,b,w_max,L_mat,l_mat25,w_mat25,w_mat,age_mat,alpha,beta,sigma,f0,z0pre,q,biomass_cutoff,biomass_observed,biomass_observed_low,biomass_observed_up,yield_observed,max_age,resilience,latinName
+small_fish,planktivore,0.007,3.07,28,5,4.5,0.7,1,2,0.6,600,1.3,0.6,0.6,0.8,2,0.5,NA,NA,NA,7,high,"Alburnus alburnus, Pungitius pungitius"
+ruffe,benthivore,0.03,2.62,144,6,5,2,3,2,0.6,600,1.3,0.6,0.6,0.8,2,0.47,NA,NA,NA,10,medium,Gymnocephalus_cernua
+bream,benthivore,0.007,3.17,4600,34,30,337,501,7,0.6,3000,1.3,0.6,0.6,0.8,2,6.75,4.45,11.24,0.88,22,medium,Abramis_brama
+white_bream,benthivore,0.01,3.07,785,14,12,21,33,4,0.6,3000,1.3,0.6,0.6,0.8,2,0.97,0.68,1.49,0.01,10,medium,Blicca_bjoerkna
+roach,benthivore,0.006,3.25,1190,18,16,49,72,5,0.6,2000,1.3,0.6,0.6,0.8,2,3.25,2.3,4.74,0.96,16,medium,Rutillus_rutillus
+perch,omnivore,0.007,3.21,1830,23,19,89,165,4,0.6,20,1.3,0.6,0.6,0.8,2,0.8,0.48,1.42,0.12,13,medium,Perca_fluviatilis
+pikeperch,predator,0.006,3.11,6000,41,35,380,622,3,0.6,90,1.3,0.6,0.6,0.8,2,1.59,1.11,2.27,0.16,10,low,Sander_lucioperca

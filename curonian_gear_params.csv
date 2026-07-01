@@ -1,0 +1,8 @@
+gear,species,sel_func,l50,l25,catchability,yield_observed
+Main,small_fish,sigmoid_length,5,4,0,NA
+Main,ruffe,sigmoid_length,6,5,0,NA
+Main,bream,sigmoid_length,40,35,1,0.88
+Main,white_bream,sigmoid_length,23,20,1,0.01
+Main,roach,sigmoid_length,24,21,1,0.96
+Main,perch,sigmoid_length,22,20,1,0.12
+Main,pikeperch,sigmoid_length,50,42,1,0.16

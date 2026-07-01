@@ -1,0 +1,3941 @@
+---
+title: "w_mat change"
+author: "Elyza Pilipaityte"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+
+clear memory
+
+```{r}
+rm(list=ls())
+
+```
+
+Install mizer, load libraries
+
+```{r}
+# remotes::install_github("sizespectrum/mizerExperimental", ref = "tuneMR_w_max", force=T)
+# remotes::install_github("sizespectrum/mizerExperimental")
+# library(mizer)
+# install.packages("ggh4x")
+library(ggh4x)
+library(mizerExperimental)
+library(tidyverse)
+library(assertthat)
+library(reshape2)
+library(patchwork)
+```
+
+```{r}
+My_theme <- theme(
+    panel.border = element_blank(),
+    panel.grid = element_blank(),
+    panel.background = element_blank(),        # removes grey panel background
+    plot.background = element_blank(),         # removes grey plot background
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    axis.line.x.bottom = element_line(color = "gray5", linewidth = 0.3),
+    axis.line.y.left = element_line(color = "gray5", linewidth = 0.3),
+    text = element_text(size = 15, family = "gillsans"))# font
+
+initial_effort <- c(0, 0, 0.111, 0.006, 0.131, 0.077, 0.083)
+```
+
+# Simulation of decreasing size at maturity
+
+```{r}
+# List of all models for uncertainty
+model_files <- c(
+  "M6_kappa8_lambda2.05extMort01_0.333.rds",
+  "M4_kappa7_lambda2.05extMort01_0.25.rds",
+  "M5_kappa7_lambda2.05extMort01_0.333.rds",
+  "M12_kappa7_lambda2.05extMort02_0.333.rds",
+  "M7_kappa9_lambda2.05extMort01_0.333.rds"
+)
+
+# w_mat decrease scenarios
+scenarios <- list(
+  all_species = c(0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01),
+  species_3_4_5_6_7 = c(0, 0, 0.01, 0.01, 0.01, 0.01, 0.01),
+  species_7_only = c(0, 0, 0, 0, 0, 0, 0.01),
+  species_6_only = c(0, 0, 0, 0, 0, 0.01, 0),
+  species_5_only = c(0, 0, 0, 0, 0.01, 0, 0),
+  species_4_only = c(0, 0, 0, 0.01, 0, 0, 0),
+  species_3_only = c(0, 0, 0.01, 0, 0, 0, 0),
+  species_2_only = c(0, 0.01, 0, 0, 0, 0, 0),
+  species_1_only = c(0.01, 0, 0, 0, 0, 0, 0),
+  no_change = c(0, 0, 0, 0, 0, 0, 0)
+)
+
+# Functions 
+psi_at_t <- function(params, t) {
+  op <- params@other_params$psi
+  list(psi = op[t + 1, , ])
+}
+
+timeVaryingERepro <- function(params, n, n_pp, n_other, t, e, ...) {
+  e[e < 0] <- 0
+  pars <- psi_at_t(params, t)
+  psi <- pars$psi
+  psi * e 
+}
+
+# Store all results
+all_model_results <- list()
+
+# Loop through each model
+for (model_file in model_files) {
+  cat("\n========================================\n")
+  cat("Processing model:", model_file, "\n")
+  cat("========================================\n")
+  
+  # Load the model
+  cur_model <- read_rds(model_file)
+  
+  # Initial projection to get starting conditions
+  sim <- project(cur_model, t_max = 300, dt = 0.2, effort = initial_effort)
+  initial_n <- sim@n[300,,]
+  initial_n_pp <- sim@n_pp[300,]
+  
+  # Store results for this model
+  model_results <- list()
+  
+  # Looping through scenarios for one model at a time
+  for (scenario_name in names(scenarios)) {
+    cat("  Running scenario:", scenario_name, "\n")
+    
+    decrease_rate <- scenarios[[scenario_name]]
+    model_scenario <- cur_model
+    
+    # Creating psi array
+    times <- 0:100
+    species <- species_params(model_scenario)$species
+    n_sp <- length(species)
+    w <- model_scenario@w
+    
+    psi_array <- array(NA, dim = c(length(times), length(species), length(w)),
+                       dimnames = list(time = times, sp = species, w = w))
+    w_mat_array <- array(NA, dim = c(length(times), length(species)),
+                         dimnames = list(time = times, sp = species))
+    w_mat25_array <- w_mat_array
+    w_max_array <- w_mat_array
+    
+    initial_w_mat   <- model_scenario@species_params$w_mat
+    initial_w_mat25 <- model_scenario@species_params$w_mat25
+    initial_w_max   <- model_scenario@species_params$w_max
+    
+    w_mat_current   <- initial_w_mat
+    w_mat25_current <- initial_w_mat25
+    w_max_current   <- initial_w_max
+    
+    for (i in seq_along(times)) {
+      w_mat_array[i, ]   <- w_mat_current
+      w_mat25_array[i, ] <- w_mat25_current
+      w_max_array[i, ]   <- w_max_current
+      w_mat_current      <- w_mat_current * (1 - decrease_rate)
+      w_mat25_current    <- w_mat25_current * (1 - decrease_rate)
+      w_max_current      <- w_max_current * (1 - decrease_rate)
+    }
+    
+    m <- model_scenario@species_params$m
+    n <- model_scenario@species_params$n
+    
+    for (t in seq_along(times)) {
+      for (sp in seq_len(n_sp)) {
+        w_mat_t   <- w_mat_array[t, sp]
+        w_mat25_t <- w_mat25_array[t, sp]
+        w_repro_max_sp <- w_max_array[t, sp]
+        
+        if (!is.na(w_mat_t) && !is.na(w_mat25_t) && w_mat_t > w_mat25_t) {
+          U        <- log(3) / log(w_mat_t / w_mat25_t)
+          maturity <- (1 + (w / w_mat_t)^(-U))^(-1)
+          maturity[maturity < 1e-08] <- 0 
+          
+          repro_prop <- (w / w_repro_max_sp)^(m[sp] - n[sp])
+          repro_prop[repro_prop > 1] <- 1
+          
+          psi <- maturity * repro_prop
+          psi[psi > 1] <- 1
+          psi[w > w_repro_max_sp] <- 1
+          
+          psi_array[t, sp, ] <- psi
+        } else {
+          psi_array[t, sp, ] <- 0
+        }
+      }
+    }
+    
+    model_scenario@other_params$psi <- psi_array
+    model_scenario <- setRateFunction(model_scenario, "ERepro", "timeVaryingERepro")
+    
+    # Run simulation
+    sim <- project(model_scenario, t_max = 50, effort = initial_effort, dt = 0.1, 
+                   initial_n = initial_n, initial_n_pp = initial_n_pp)
+    
+    model_results[[scenario_name]] <- sim
+  }
+  
+  # Storing results
+  all_model_results[[model_file]] <- model_results
+}
+
+cat("\nAll simulations complete!\n")
+
+```
+
+upper and lower values used
+```{r}
+# Extracting biomass data from all models
+combined_biomass_data <- data.frame()
+
+for (model_name in names(all_model_results)) {
+  for (scenario_name in names(all_model_results[[model_name]])) {
+    sim <- all_model_results[[model_name]][[scenario_name]]
+    biomass <- getBiomass(sim)
+    
+    biomass_long <- as.data.frame(biomass) %>%
+      mutate(time = as.numeric(rownames(biomass))) %>%
+      pivot_longer(cols = -time, names_to = "species", values_to = "biomass") %>%
+      mutate(
+        model = model_name,
+        scenario = scenario_name
+      )
+    
+    combined_biomass_data <- bind_rows(combined_biomass_data, biomass_long)
+  }
+}
+
+# Summary statistics with min and max values
+biomass_summary <- combined_biomass_data %>%
+  group_by(scenario, species, time) %>%
+  summarise(
+    mean_biomass = mean(biomass),
+    median_biomass = median(biomass),
+    sd_biomass = sd(biomass),
+    min_biomass = min(biomass),      # Minimum across models
+    max_biomass = max(biomass),      # Maximum across models
+    .groups = 'drop'
+  )
+
+# Calculating percentage change with min/max bounds
+biomass_change_summary <- combined_biomass_data %>%
+  group_by(model, scenario, species) %>%
+  mutate(biomass_change_percent = (biomass - first(biomass)) / first(biomass) * 100) %>%
+  ungroup() %>%
+  group_by(scenario, species, time) %>%
+  summarise(
+    mean_change = mean(biomass_change_percent),
+    median_change = median(biomass_change_percent),
+    min_change = min(biomass_change_percent),      # minimum value across models
+    max_change = max(biomass_change_percent),      # maximum value across models
+    .groups = 'drop'
+  )
+ 
+# Better scenario labels
+biomass_change_summary <- biomass_change_summary %>%
+  filter(scenario != "no_change") %>%
+   mutate(scenario_label = case_when(
+    scenario == "no_change" ~ "No decline in w_mat",
+    scenario == "all_species" ~ "all 7 spp.",
+    scenario == "species_3_4_5_6_7" ~ "5 commercial spp.",
+    scenario == "species_1_only" ~ "small fish",
+    scenario == "species_2_only" ~ "ruffe",
+    scenario == "species_3_only" ~ "bream",
+    scenario == "species_4_only" ~ "white bream",
+    scenario == "species_5_only" ~ "roach",
+    scenario == "species_6_only" ~ "perch",
+    scenario == "species_7_only" ~ "pikeperch",
+    TRUE ~ scenario
+  )) %>%
+  mutate(scenario_label = factor(scenario_label, levels = c(
+    "all 7 spp.",
+    "5 commercial spp.",
+    "pikeperch",
+    "perch",
+    "roach",
+    "bream",
+    "white bream",
+    "ruffe",
+    "small fish"
+  )))
+
+# Species colors
+species_colors <- c(
+  "small_fish" = "#FCC300",
+  "ruffe" = "#44AA99", 
+  "bream" = "#b2182b",
+  "white_bream" = "#661100",
+  "roach" = "#AA4499",
+  "perch" = "#2166ac",
+  "pikeperch" = "#93AA00"
+)
+
+# plot 
+p0 <- ggplot(biomass_change_summary, aes(x = time, y = mean_change, color = species, fill = species)) +
+  geom_ribbon(aes(ymin = min_change, ymax = max_change),
+              alpha = 0.2, color = NA) +
+  geom_line(linewidth = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", alpha = 0.7) +
+  facet_wrap2(~ scenario_label, scales = "fixed", ncol = 1, 
+            axes = "all", remove_labels = "x") +
+  labs(x = "Time (years)", 
+       y = "Biomass change (%)", 
+       color = "Species",
+       fill = "Species") +
+  scale_color_manual(values = species_colors) +
+  scale_fill_manual(values = species_colors) +
+  theme_minimal() +
+theme(
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.3),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+
+    axis.line.x.bottom = element_line(color = "black", linewidth = 0.5),
+    axis.line.y.left = element_line(color = "black", linewidth = 0.5),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 10, face = "bold", hjust = 0, margin = margin(b = 5)),
+    
+    # Axis styling
+    axis.line = element_line(color = "black", linewidth = 0.5),
+    axis.text = element_text(size = 9, color = "black"),
+    axis.title = element_text(size = 11, face = "bold"),
+    axis.ticks = element_line(color = "black", linewidth = 0.5),
+    
+    # Legend
+    legend.position = "right",
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 9),
+    legend.key = element_blank(),
+    legend.background = element_blank(),
+    
+    # Overall plot
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.margin = margin(10, 10, 10, 10),
+    plot.subtitle = element_text(size = 9, hjust = 0.5)
+  )
+
+```
+
+# biomass matrix
+
+```{r}
+# Calculate relative biomass change for all models and scenarios
+calculate_change_all_models <- function(all_model_results, time_point = 50) {
+  
+  # Initialize list to store results from each model
+  model_changes <- list()
+  
+  for (model_name in names(all_model_results)) {
+    # Extract results for this model
+    model_results <- all_model_results[[model_name]]
+    
+    # Calculate changes for each scenario
+    all_decrease <- (getBiomass(model_results$all_species)[time_point, ] - 
+                     getBiomass(model_results$all_species)[1, ]) / 
+                     getBiomass(model_results$all_species)[1, ]
+    
+    five_species_decrease <- (getBiomass(model_results$species_3_4_5_6_7)[time_point, ] - 
+                              getBiomass(model_results$species_3_4_5_6_7)[1, ]) / 
+                              getBiomass(model_results$species_3_4_5_6_7)[1, ]
+    
+    pikeperch_decrease <- (getBiomass(model_results$species_7_only)[time_point, ] - 
+                           getBiomass(model_results$species_7_only)[1, ]) / 
+                           getBiomass(model_results$species_7_only)[1, ]
+    
+    perch_decrease <- (getBiomass(model_results$species_6_only)[time_point, ] - 
+                       getBiomass(model_results$species_6_only)[1, ]) / 
+                       getBiomass(model_results$species_6_only)[1, ]
+    
+    roach_decrease <- (getBiomass(model_results$species_5_only)[time_point, ] - 
+                       getBiomass(model_results$species_5_only)[1, ]) / 
+                       getBiomass(model_results$species_5_only)[1, ]
+    
+    wbream_decrease <- (getBiomass(model_results$species_4_only)[time_point, ] - 
+                        getBiomass(model_results$species_4_only)[1, ]) / 
+                        getBiomass(model_results$species_4_only)[1, ]
+    
+    bream_decrease <- (getBiomass(model_results$species_3_only)[time_point, ] - 
+                       getBiomass(model_results$species_3_only)[1, ]) / 
+                       getBiomass(model_results$species_3_only)[1, ]
+    
+    ruffe_decrease <- (getBiomass(model_results$species_2_only)[time_point, ] - 
+                       getBiomass(model_results$species_2_only)[1, ]) / 
+                       getBiomass(model_results$species_2_only)[1, ]
+    
+    small_fish_decrease <- (getBiomass(model_results$species_1_only)[time_point, ] - 
+                            getBiomass(model_results$species_1_only)[1, ]) / 
+                            getBiomass(model_results$species_1_only)[1, ]
+    
+    no_change <- (getBiomass(model_results$no_change)[time_point, ] - 
+                  getBiomass(model_results$no_change)[1, ]) / 
+                  getBiomass(model_results$no_change)[1, ]
+    
+    # Combine into matrix
+    model_change_matrix <- rbind(
+      small_fish_decrease, 
+      ruffe_decrease, 
+      bream_decrease, 
+      wbream_decrease, 
+      roach_decrease, 
+      perch_decrease, 
+      pikeperch_decrease, 
+      five_species_decrease, 
+      all_decrease, 
+      no_change
+    )
+    
+    # Store with model name
+    model_changes[[model_name]] <- model_change_matrix
+  }
+  
+  return(model_changes)
+}
+
+# Calculate changes for all models
+all_model_changes <- calculate_change_all_models(all_model_results, time_point = 50)
+
+# Convert to long format with all models
+changes_long_all <- data.frame()
+
+for (model_name in names(all_model_changes)) {
+  change_matrix <- all_model_changes[[model_name]] * 100  # Convert to percent
+  change_long <- melt(change_matrix)
+  colnames(change_long) <- c("Scenario", "Species", "Change_percent")
+  change_long$Model <- model_name
+  changes_long_all <- rbind(changes_long_all, change_long)
+}
+
+# Calculate summary statistics with MIN/MAX
+changes_summary <- changes_long_all %>%
+  group_by(Scenario, Species) %>%
+  summarise(
+    mean_change = mean(Change_percent),
+    median_change = median(Change_percent),
+    min_change = min(Change_percent),      # Minimum across models
+    max_change = max(Change_percent),      # Maximum across models
+    range_width = max(Change_percent) - min(Change_percent),  # Width of range
+    .groups = 'drop'
+  )
+
+# Better scenario labels
+changes_summary <- changes_summary %>%
+  mutate(Scenario_label = case_when(
+    Scenario == "small_fish_decrease" ~ "small fish",
+    Scenario == "ruffe_decrease" ~ "ruffe",
+    Scenario == "bream_decrease" ~ "bream",
+    Scenario == "wbream_decrease" ~ "white bream",
+    Scenario == "roach_decrease" ~ "roach",
+    Scenario == "perch_decrease" ~ "perch",
+    Scenario == "pikeperch_decrease" ~ "pikeperch",
+    Scenario == "five_species_decrease" ~ "5 commercial spp.",
+    Scenario == "all_decrease" ~ "all 7 spp.",
+    Scenario == "no_change" ~ "no change",
+    TRUE ~ as.character(Scenario)
+  ))
+
+# Reorder scenarios
+changes_summary$Scenario_label <- factor(changes_summary$Scenario_label,
+                                          levels = c("no change", "small fish", "ruffe", 
+                                                     "bream", "white bream", "roach", 
+                                                     "perch", "pikeperch", "5 commercial spp.", 
+                                                     "all 7 spp."))
+```
+
+```{r}
+# After running fishing scenarios, save the summary
+changes_summary_fishing <- changes_summary %>%
+  filter(Scenario_label != "no change") %>%
+  mutate(
+    Fishing = "With fishing",
+    label_text = case_when(
+      round(min_change, 0) == round(max_change, 0) ~ sprintf("%.0f", min_change),
+      TRUE ~ sprintf("%.0f – %.0f", min_change, max_change)
+    )
+  )
+```
+
+```{r}
+# Filter out "No change" scenario and create custom label
+changes_summary <- changes_summary_fishing %>%
+  filter(Scenario_label != "no change") %>%
+  mutate(
+    min_r = round(min_change, 0),
+    max_r = round(max_change, 0),
+    min_r = ifelse(min_r == 0, 0, min_r),
+    max_r = ifelse(max_r == 0, 0, max_r),
+    label_text = case_when(
+      min_r == max_r ~ sprintf("%.0f", min_r),
+      TRUE ~ sprintf("%.0f – %.0f", min_r, max_r)
+    )
+  ) %>%
+  select(-min_r, -max_r)
+
+# Reorder scenarios (without "No change")
+changes_summary$Scenario_label <- factor(changes_summary$Scenario_label,
+                                          levels = c("small fish", "ruffe", 
+                                                     "bream", "white bream", "roach", 
+                                                     "perch", "pikeperch", "5 commercial spp.", 
+                                                     "all 7 spp."))
+
+# Create plot
+p_fisihng <- ggplot(changes_summary, aes(x = Species, y = Scenario_label, fill = mean_change)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = label_text), size = 3.5, lineheight = 1.1) +  # Increased size slightly
+  scale_fill_gradient2(low = "#56b4e9", mid = "white", high = "#E69F00", 
+                       midpoint = 0, name = "Mean\nChange (%)") +
+  geom_hline(yintercept = 7.5, linewidth = 1.5, color = "grey30") +
+  labs(x = "Species", 
+       y = "w_mat Decrease Scenario",
+       title = "Biomass Change at Year 50 (%)",
+       subtitle = "Range (min – max) across 5 model parameterizations") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(size = 11, face = "bold"),
+    plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 9, hjust = 0.5),
+    legend.title = element_text(size = 9, face = "bold"),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "white", color = NA)
+  )
+
+```
+I ran all the code for changes in diets, mortality, and size spectrum first, because I did not create separate code chunks for fished and unfished scenarios. Sometimes I rename the plot and save it so I can combine both the fished and unfished plots.
+
+# Without fishing
+
+Unfished biomass in five models
+I want to check unfished biomass in equilibrium conditions
+```{r}
+eq_biomass_all <- list()
+
+for (model_file in model_files) {
+  cur_model <- read_rds(model_file)
+
+  # with fishing
+  sim_with_fishing <- project(cur_model, t_max = 300, effort = initial_effort, dt = 0.2)
+  initial_n_fishing    <- sim_with_fishing@n[300,,]
+  initial_n_pp_fishing <- sim_with_fishing@n_pp[300,]
+
+  # no fishing to steady state
+  sim_no_fishing <- project(cur_model, t_max = 1000, effort = 0, dt = 0.1,
+                            initial_n = initial_n_fishing,
+                            initial_n_pp = initial_n_pp_fishing)
+
+  # Biomass at the last time step
+  bm <- getBiomass(sim_no_fishing)
+  eq_biomass_all[[model_file]] <- bm[nrow(bm), ]
+}
+
+# Combine all 5 models into one table
+eq_biomass_df <- do.call(rbind, eq_biomass_all)
+print(eq_biomass_df)
+
+cv_pct <- apply(eq_biomass_df, 2, function(x) sd(x)/mean(x)*100)
+round(range(cv_pct), 0)   # gives the low–high CV across species
+
+var_pct_min <- apply(eq_biomass_df, 2, function(x) (max(x) - min(x)) / min(x) * 100)
+round(range(var_pct_min), 0)
+
+fished_biomass_all <- list()
+
+for (model_file in model_files) {
+  cur_model <- read_rds(model_file)
+
+  # 300-year run with fishing
+  sim_with_fishing <- project(cur_model, t_max = 300, effort = initial_effort, dt = 0.2)
+
+  # Biomass at the last time step
+  bm <- getBiomass(sim_with_fishing)
+  fished_biomass_all[[model_file]] <- bm[nrow(bm), ]
+}
+
+# Combine all 5 models into one table (rows = models, cols = species)
+fished_biomass_df <- do.call(rbind, fished_biomass_all)
+print(fished_biomass_df)
+
+# Between-model spread per species
+cv_pct <- apply(fished_biomass_df, 2, function(x) sd(x)/mean(x)*100)
+round(range(cv_pct), 0)
+
+var_pct_min <- apply(fished_biomass_df, 2, function(x) (max(x) - min(x)) / min(x) * 100)
+round(range(var_pct_min), 0)
+```
+
+maturity size decrease simulation
+
+```{r}
+# List of all models to test
+model_files <- c(
+  "M6_kappa8_lambda2.05extMort01_0.333.rds",
+  "M4_kappa7_lambda2.05extMort01_0.25.rds",
+  "M5_kappa7_lambda2.05extMort01_0.333.rds",
+  "M12_kappa7_lambda2.05extMort02_0.333.rds",
+  "M7_kappa9_lambda2.05extMort01_0.333.rds"
+)
+
+# scenarios (same as before)
+scenarios <- list(
+  all_species = c(0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01),
+  species_3_4_5_6_7 = c(0, 0, 0.01, 0.01, 0.01, 0.01, 0.01),
+  species_7_only = c(0, 0, 0, 0, 0, 0, 0.01),
+  species_6_only = c(0, 0, 0, 0, 0, 0.01, 0),
+  species_5_only = c(0, 0, 0, 0, 0.01, 0, 0),
+  species_4_only = c(0, 0, 0, 0.01, 0, 0, 0),
+  species_3_only = c(0, 0, 0.01, 0, 0, 0, 0),
+  species_2_only = c(0, 0.01, 0, 0, 0, 0, 0),
+  species_1_only = c(0.01, 0, 0, 0, 0, 0, 0),
+  no_change = c(0, 0, 0, 0, 0, 0, 0)
+)
+
+# Functions (same as before)
+psi_at_t <- function(params, t) {
+  op <- params@other_params$psi
+  list(psi = op[t + 1, , ])
+}
+
+timeVaryingERepro <- function(params, n, n_pp, n_other, t, e, ...) {
+  e[e < 0] <- 0
+  pars <- psi_at_t(params, t)
+  psi <- pars$psi
+  psi * e 
+}
+
+# Store ALL results
+all_model_results <- list()
+
+# Loop through each model
+for (model_file in model_files) {
+  cat("\n========================================\n")
+  cat("Processing model:", model_file, "\n")
+  cat("========================================\n")
+  
+  # Load the model
+  cur_model <- read_rds(model_file)
+  
+  # Step 1: Initial projection WITH fishing to establish baseline
+  cat("  Step 1: Running with fishing to establish baseline...\n")
+  sim_with_fishing <- project(cur_model, t_max = 300, effort = initial_effort, dt = 0.2)
+  
+  initial_n_fishing <- sim_with_fishing@n[300,,]
+  initial_n_pp_fishing <- sim_with_fishing@n_pp[300,]
+  
+  # Step 2: Long projection WITHOUT fishing to reach steady state
+  cat("  Step 2: Running without fishing to reach steady state (1000 years)...\n")
+  sim_no_fishing <- project(cur_model, t_max = 1000, effort = 0, dt = 0.1, 
+                            initial_n = initial_n_fishing, 
+                            initial_n_pp = initial_n_pp_fishing)
+  
+  # Extract steady state conditions (end of no-fishing period)
+  initial_n <- sim_no_fishing@n[1000,,]
+  initial_n_pp <- sim_no_fishing@n_pp[1000,]
+  
+  cat("  Step 3: Steady state reached. Starting scenario simulations...\n")
+  
+  # Store results for this model
+  model_results <- list()
+  
+  # Loop through scenarios for this model
+  for (scenario_name in names(scenarios)) {
+    cat("    Running scenario:", scenario_name, "\n")
+    
+    decrease_rate <- scenarios[[scenario_name]]
+    model_scenario <- cur_model
+    
+    # Create psi array
+    times <- 0:100
+    species <- species_params(model_scenario)$species
+    n_sp <- length(species)
+    w <- model_scenario@w
+    
+    psi_array <- array(NA, dim = c(length(times), length(species), length(w)),
+                       dimnames = list(time = times, sp = species, w = w))
+    w_mat_array <- array(NA, dim = c(length(times), length(species)),
+                         dimnames = list(time = times, sp = species))
+    w_mat25_array <- w_mat_array
+    w_max_array <- w_mat_array
+    
+    initial_w_mat   <- model_scenario@species_params$w_mat
+    initial_w_mat25 <- model_scenario@species_params$w_mat25
+    initial_w_max   <- model_scenario@species_params$w_max
+    
+    w_mat_current   <- initial_w_mat
+    w_mat25_current <- initial_w_mat25
+    w_max_current   <- initial_w_max
+    
+    # Build the declining w_mat arrays
+    for (i in seq_along(times)) {
+      w_mat_array[i, ]   <- w_mat_current
+      w_mat25_array[i, ] <- w_mat25_current
+      w_max_array[i, ]   <- w_max_current
+      w_mat_current      <- w_mat_current * (1 - decrease_rate)
+      w_mat25_current    <- w_mat25_current * (1 - decrease_rate)
+      w_max_current      <- w_max_current * (1 - decrease_rate)
+    }
+    
+    m <- model_scenario@species_params$m
+    n <- model_scenario@species_params$n
+    
+    # Calculate psi for each time step
+    for (t in seq_along(times)) {
+      for (sp in seq_len(n_sp)) {
+        w_mat_t   <- w_mat_array[t, sp]
+        w_mat25_t <- w_mat25_array[t, sp]
+        w_repro_max_sp <- w_max_array[t, sp]
+        
+        if (!is.na(w_mat_t) && !is.na(w_mat25_t) && w_mat_t > w_mat25_t) {
+          U        <- log(3) / log(w_mat_t / w_mat25_t)
+          maturity <- (1 + (w / w_mat_t)^(-U))^(-1)
+          maturity[maturity < 1e-08] <- 0 
+          
+          repro_prop <- (w / w_repro_max_sp)^(m[sp] - n[sp])
+          repro_prop[repro_prop > 1] <- 1
+          
+          psi <- maturity * repro_prop
+          psi[psi > 1] <- 1
+          psi[w > w_repro_max_sp] <- 1
+          
+          psi_array[t, sp, ] <- psi
+        } else {
+          psi_array[t, sp, ] <- 0
+        }
+      }
+    }
+    
+    model_scenario@other_params$psi <- psi_array
+    model_scenario <- setRateFunction(model_scenario, "ERepro", "timeVaryingERepro")
+    
+    # Run simulation with NO FISHING, starting from steady state
+    sim <- project(model_scenario, t_max = 50, effort = 0, dt = 0.1,
+                   initial_n = initial_n, initial_n_pp = initial_n_pp)
+    
+    model_results[[scenario_name]] <- sim
+  }
+  
+  # Store this model's results
+  all_model_results[[model_file]] <- model_results
+  
+  cat("  Completed model:", model_file, "\n")
+}
+
+cat("\n========================================\n")
+cat("All simulations complete!\n")
+cat("========================================\n")
+```
+
+upper and lower values used biomass change through time
+```{r}
+species_order <- c("small_fish", "ruffe", "bream", "white_bream", 
+                   "roach", "perch", "pikeperch")
+
+# Extract biomass data from all models
+combined_biomass_data <- data.frame()
+
+for (model_name in names(all_model_results)) {
+  for (scenario_name in names(all_model_results[[model_name]])) {
+    sim <- all_model_results[[model_name]][[scenario_name]]
+    biomass <- getBiomass(sim)
+    
+    biomass_long <- as.data.frame(biomass) %>%
+      mutate(time = as.numeric(rownames(biomass))) %>%
+      pivot_longer(cols = -time, names_to = "species", values_to = "biomass") %>%
+      mutate(
+        model = model_name,
+        scenario = scenario_name
+      )
+    
+    combined_biomass_data <- bind_rows(combined_biomass_data, biomass_long)
+  }
+}
+
+# Calculate summary statistics with MIN/MAX instead of CI
+biomass_summary <- combined_biomass_data %>%
+  group_by(scenario, species, time) %>%
+  summarise(
+    mean_biomass = mean(biomass),
+    median_biomass = median(biomass),
+    sd_biomass = sd(biomass),
+    min_biomass = min(biomass),      # Minimum across models
+    max_biomass = max(biomass),      # Maximum across models
+    .groups = 'drop'
+  )
+
+# Calculate percentage change with MIN/MAX bounds
+biomass_change_summary <- combined_biomass_data %>%
+  group_by(model, scenario, species) %>%
+  mutate(biomass_change_percent = (biomass - first(biomass)) / first(biomass) * 100) %>%
+  ungroup() %>%
+  group_by(scenario, species, time) %>%
+  summarise(
+    mean_change = mean(biomass_change_percent),
+    median_change = median(biomass_change_percent),
+    min_change = min(biomass_change_percent),      # Minimum value across models
+    max_change = max(biomass_change_percent),      # Maximum value across models
+    .groups = 'drop'
+  )
+ 
+# Better scenario labels
+biomass_change_summary <- biomass_change_summary %>%
+  mutate(scenario_label = case_when(
+    scenario == "no_change" ~ "No decline in w_mat",
+    scenario == "all_species" ~ "all 7 spp.",
+    scenario == "species_3_4_5_6_7" ~ "5 commercial spp.",
+    scenario == "species_1_only" ~ "small fish",
+    scenario == "species_2_only" ~ "ruffe",
+    scenario == "species_3_only" ~ "bream",
+    scenario == "species_4_only" ~ "white bream",
+    scenario == "species_5_only" ~ "roach",
+    scenario == "species_6_only" ~ "perch",
+    scenario == "species_7_only" ~ "pikeperch",
+    TRUE ~ scenario
+  )) %>%
+  mutate(scenario_label = factor(scenario_label, levels = c(
+    "all 7 spp.",
+    "5 commercial spp.",
+    "pikeperch",
+    "perch",
+    "roach",
+    "bream",
+    "white bream",
+    "ruffe",
+    "small fish"
+  )))
+
+# Create the plot with no fishing 
+p_noF <- biomass_change_summary %>%
+  filter(scenario != "no_change") %>%
+  ggplot(aes(x = time, y = mean_change, color = species, fill = species)) +
+  geom_ribbon(aes(ymin = min_change, ymax = max_change),
+              alpha = 0.2, color = NA) +
+  coord_cartesian(xlim = c(0, 50)) +
+  geom_line(linewidth = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", alpha = 0.7) +
+  facet_wrap2(~ scenario_label, scales = "fixed", ncol = 1, 
+            axes = "all", remove_labels = "x") +
+  labs(x = "Time (years)", 
+       y = "Biomass change (%)", 
+       color = "Species",
+       fill = "Species") +
+scale_color_manual(values = species_colors, breaks = species_order,
+                     labels = function(x) gsub("_", " ", x)) +
+  scale_fill_manual(values = species_colors, breaks = species_order,
+                    labels = function(x) gsub("_", " ", x)) +
+  theme_minimal() +
+theme(
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.3),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.border = element_blank(),
+
+    axis.line.x.bottom = element_line(color = "black", linewidth = 0.5),
+    axis.line.y.left = element_line(color = "black", linewidth = 0.5),
+    
+    # Strip (facet labels) - minimal styling
+    strip.background = element_blank(),
+    strip.text = element_text(size = 10, face = "bold", hjust = 0, margin = margin(b = 5)),
+    
+    # Axis styling
+    axis.line = element_line(color = "black", linewidth = 0.5),
+    axis.text = element_text(size = 9, color = "black"),
+    axis.title = element_text(size = 11, face = "bold"),
+    axis.ticks = element_line(color = "black", linewidth = 0.5),
+    
+    # Legend
+    legend.position = "right",
+    legend.title = element_text(size = 10, face = "bold"),
+    legend.text = element_text(size = 9),
+    legend.key = element_blank(),
+    legend.background = element_blank(),
+    
+    # Overall plot
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.margin = margin(10, 10, 10, 10),
+    plot.subtitle = element_text(size = 9, hjust = 0.5)
+  )
+
+```
+
+combined plot of biomass change through time
+
+```{r}
+((p_noF + theme(legend.position = "none")) + 
+ (p0 + theme(axis.title.y = element_blank()))) +
+  plot_layout(guides = "collect")
+
+combined <- ((p0 + 
+                theme(legend.position = "none", 
+                      axis.title.x = element_blank(),
+                      plot.title = element_text(hjust = 0.5, size = 12, face = "bold")) +
+                ggtitle("With fishing")) + 
+             (p_noF + 
+                theme(axis.title.y = element_blank(), 
+                      axis.title.x = element_blank(),
+                      plot.title = element_text(hjust = 0.5, size = 12, face = "bold")) +
+                ggtitle("Without fishing"))) +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    caption = "Time (years)",
+    theme = theme(plot.caption = element_text(hjust = 0.45, size = 11, 
+                                               face = "bold", color = "black"))
+  )
+
+# ggsave("biomass_through_time.tiff", combined, width = 7.5, height = 10, dpi = 600, bg = "white")
+```
+
+# biomass matrix
+
+```{r}
+# Calculate relative biomass change for all models and scenarios
+calculate_change_all_models <- function(all_model_results, time_point = 50) {
+  
+  # Initialize list to store results from each model
+  model_changes <- list()
+  
+  for (model_name in names(all_model_results)) {
+    # Extract results for this model
+    model_results <- all_model_results[[model_name]]
+    
+    # Calculate changes for each scenario
+    all_decrease <- (getBiomass(model_results$all_species)[time_point, ] - 
+                     getBiomass(model_results$all_species)[1, ]) / 
+                     getBiomass(model_results$all_species)[1, ]
+    
+    five_species_decrease <- (getBiomass(model_results$species_3_4_5_6_7)[time_point, ] - 
+                              getBiomass(model_results$species_3_4_5_6_7)[1, ]) / 
+                              getBiomass(model_results$species_3_4_5_6_7)[1, ]
+    
+    pikeperch_decrease <- (getBiomass(model_results$species_7_only)[time_point, ] - 
+                           getBiomass(model_results$species_7_only)[1, ]) / 
+                           getBiomass(model_results$species_7_only)[1, ]
+    
+    perch_decrease <- (getBiomass(model_results$species_6_only)[time_point, ] - 
+                       getBiomass(model_results$species_6_only)[1, ]) / 
+                       getBiomass(model_results$species_6_only)[1, ]
+    
+    roach_decrease <- (getBiomass(model_results$species_5_only)[time_point, ] - 
+                       getBiomass(model_results$species_5_only)[1, ]) / 
+                       getBiomass(model_results$species_5_only)[1, ]
+    
+    wbream_decrease <- (getBiomass(model_results$species_4_only)[time_point, ] - 
+                        getBiomass(model_results$species_4_only)[1, ]) / 
+                        getBiomass(model_results$species_4_only)[1, ]
+    
+    bream_decrease <- (getBiomass(model_results$species_3_only)[time_point, ] - 
+                       getBiomass(model_results$species_3_only)[1, ]) / 
+                       getBiomass(model_results$species_3_only)[1, ]
+    
+    ruffe_decrease <- (getBiomass(model_results$species_2_only)[time_point, ] - 
+                       getBiomass(model_results$species_2_only)[1, ]) / 
+                       getBiomass(model_results$species_2_only)[1, ]
+    
+    small_fish_decrease <- (getBiomass(model_results$species_1_only)[time_point, ] - 
+                            getBiomass(model_results$species_1_only)[1, ]) / 
+                            getBiomass(model_results$species_1_only)[1, ]
+    
+    no_change <- (getBiomass(model_results$no_change)[time_point, ] - 
+                  getBiomass(model_results$no_change)[1, ]) / 
+                  getBiomass(model_results$no_change)[1, ]
+    
+    # Combine into matrix
+    model_change_matrix <- rbind(
+      small_fish_decrease, 
+      ruffe_decrease, 
+      bream_decrease, 
+      wbream_decrease, 
+      roach_decrease, 
+      perch_decrease, 
+      pikeperch_decrease, 
+      five_species_decrease, 
+      all_decrease, 
+      no_change
+    )
+    
+    # Store with model name
+    model_changes[[model_name]] <- model_change_matrix
+  }
+  
+  return(model_changes)
+}
+
+# Calculate changes for all models
+all_model_changes <- calculate_change_all_models(all_model_results, time_point = 50)
+
+# Convert to long format with all models
+changes_long_all <- data.frame()
+
+for (model_name in names(all_model_changes)) {
+  change_matrix <- all_model_changes[[model_name]] * 100  # Convert to percent
+  change_long <- melt(change_matrix)
+  colnames(change_long) <- c("Scenario", "Species", "Change_percent")
+  change_long$Model <- model_name
+  changes_long_all <- rbind(changes_long_all, change_long)
+}
+
+# Calculate summary statistics with MIN/MAX
+changes_summary <- changes_long_all %>%
+  group_by(Scenario, Species) %>%
+  summarise(
+    mean_change = mean(Change_percent),
+    median_change = median(Change_percent),
+    min_change = min(Change_percent),      # Minimum across models
+    max_change = max(Change_percent),      # Maximum across models
+    range_width = max(Change_percent) - min(Change_percent),  # Width of range
+    .groups = 'drop'
+  )
+
+# Better scenario labels
+changes_summary <- changes_summary %>%
+  mutate(Scenario_label = case_when(
+    Scenario == "small_fish_decrease" ~ "small fish",
+    Scenario == "ruffe_decrease" ~ "ruffe",
+    Scenario == "bream_decrease" ~ "bream",
+    Scenario == "wbream_decrease" ~ "white bream",
+    Scenario == "roach_decrease" ~ "roach",
+    Scenario == "perch_decrease" ~ "perch",
+    Scenario == "pikeperch_decrease" ~ "pikeperch",
+    Scenario == "five_species_decrease" ~ "5 commercial spp.",
+    Scenario == "all_decrease" ~ "all 7 spp.",
+    Scenario == "no_change" ~ "no change",
+    TRUE ~ as.character(Scenario)
+  ))
+
+# Reorder scenarios
+changes_summary$Scenario_label <- factor(changes_summary$Scenario_label,
+                                    levels = c("No change", "small fish", "ruffe", 
+                                              "bream", "white bream", "roach", 
+                                               "perch", "pikeperch", "5 commercial spp.", 
+                                                     "all 7 spp."))
+```
+
+```{r}
+# After running no-fishing scenarios, save the summary
+changes_summary_no_fishing <- changes_summary %>%
+  filter(Scenario_label != "No change") %>%
+  mutate(
+    Fishing = "Without fishing",
+    label_text = case_when(
+      round(min_change, 0) == round(max_change, 0) ~ sprintf("%.0f", min_change),
+      TRUE ~ sprintf("%.0f – %.0f", min_change, max_change)
+    )
+  )
+```
+
+```{r}
+# Filter out "No change" scenario and create custom label
+changes_summary <- changes_summary_no_fishing %>%
+  filter(Scenario_label != "No change") %>%
+  mutate(
+    min_r = round(min_change, 0),
+    max_r = round(max_change, 0),
+    min_r = ifelse(min_r == 0, 0, min_r),
+    max_r = ifelse(max_r == 0, 0, max_r),
+    label_text = case_when(
+      min_r == max_r ~ sprintf("%.0f", min_r),
+      TRUE ~ sprintf("%.0f – %.0f", min_r, max_r)
+    )
+  ) %>%
+  select(-min_r, -max_r)
+
+# Reorder scenarios (without "No change")
+changes_summary$Scenario_label <- factor(changes_summary$Scenario_label,
+                                  levels = c("small fish", "ruffe", 
+                                             "bream", "white bream", "roach", 
+                                             "perch", "pikeperch", "5 commercial spp.", 
+                                                     "all 7 spp."))
+
+# Create plot
+p_no_fising <- ggplot(changes_summary, aes(x = Species, y = Scenario_label, fill = mean_change)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = label_text), size = 3.5, lineheight = 1.1) +  # Increased size slightly
+  scale_fill_gradient2(low = "#56b4e9", mid = "white", high = "#E69F00", 
+                       midpoint = 0, name = "Mean\nChange (%)") +
+  geom_hline(yintercept = 7.5, linewidth = 1.5, color = "grey30") +
+  labs(x = "Species", 
+       y = "w_mat Decrease Scenario",
+       title = "Biomass Change at Year 50 (%)",
+       subtitle = "Range (min – max) across 5 model parameterizations") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 10),
+    axis.title = element_text(size = 11, face = "bold"),
+    plot.title = element_text(size = 12, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 9, hjust = 0.5),
+    legend.title = element_text(size = 9, face = "bold"),
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "white", color = NA)
+  )
+
+```
+
+Combine both datasets with fishing and without
+
+```{r}
+# Combine both datasets
+changes_summary_combined <- bind_rows(
+  changes_summary_fishing,
+  changes_summary_no_fishing
+)
+
+# Make sure Scenario_label levels are consistent
+changes_summary_combined$Scenario_label <- factor(
+  changes_summary_combined$Scenario_label,
+  levels = c("small fish", "ruffe", "bream", "white bream", 
+             "roach", "perch", "pikeperch", "5 commercial spp.", "all 7 spp.")
+)
+
+# Set fishing as a factor with desired order
+changes_summary_combined$Fishing <- factor(
+  changes_summary_combined$Fishing,
+  levels = c("With fishing", "Without fishing")
+)
+```
+
+```{r}
+p_combined <- ggplot(changes_summary_combined, 
+                     aes(x = Species, y = Scenario_label, fill = mean_change)) +
+  geom_tile(color = "white", linewidth = 1) +
+  geom_text(aes(label = label_text), size = 3) +
+  scale_fill_gradient2(low = "#56b4e9", mid = "white", high = "#E69F00", 
+                       midpoint = 0, name = "Mean change (%)") +
+  scale_x_discrete(labels = c("small_fish" = "small fish", "white_bream" = "white bream")) +
+  annotate("rect", 
+           xmin = 0.5, xmax = length(unique(changes_summary_combined$Species)) + 0.5,
+           ymin = 7.5, ymax = 8.5,  # adjust ymax to number of total levels + 0.5
+           fill = NA, color = "grey70", linewidth = 1.2) +
+  facet_wrap(~ Fishing, ncol = 2) +
+  labs(x = "Species", 
+       y = "Maturity size decrease scenario") +
+  theme(
+    axis.text.x = element_text(angle = 50, hjust = 1, size = 13),
+    axis.text.y = element_text(size = 13),
+    axis.title = element_text(size = 13, face = "bold"),
+    plot.title = element_text(size = 13, face = "bold", hjust = 0.5),
+    strip.text = element_text(size = 13, face = "bold"),
+    strip.background = element_rect(fill = "grey90", color = NA),
+    legend.title = element_text(size = 13, face = "bold"),
+    legend.position = "bottom",
+    panel.grid = element_blank(),
+    plot.background = element_rect(fill = "white", color = NA)
+  )
+
+# ggsave("biomass_change_comparison.tiff", p_combined, width = 9, height = 7, dpi = 600, bg = "white")
+```
+
+size spectrum without fishing
+
+```{r}
+plotSpectra(all_model_results$M7_kappa9_lambda2.05extMort01_0.333.rds$no_change)
+plotSpectra(all_model_results$M12_kappa7_lambda2.05extMort02_0.333.rds$no_change)
+plotSpectra(all_model_results$M5_kappa7_lambda2.05extMort01_0.333.rds$no_change)
+plotSpectra(all_model_results$M4_kappa7_lambda2.05extMort01_0.25.rds$no_change)
+plotSpectra(all_model_results$M6_kappa8_lambda2.05extMort01_0.333.rds$no_change)
+```
+
+# diet change
+
+For each predator body size class and time step, we calculated the percent change in proportional diet composition relative to the initial model state (year 1), allowing us to track how prey contributions to pikeperch diet shifted throughout the simulation in response to decreasing maturity size.
+
+with ci
+
+```{r}
+# ── Extract diet data ──
+diet_all_timesteps_list <- list()
+for (model_name in names(all_model_results)) {
+  for (scenario_name in names(all_model_results[[model_name]])) {
+    
+    sim    <- all_model_results[[model_name]][[scenario_name]]
+    params <- sim@params
+    times  <- getTimes(sim)
+    
+    diet_baseline_df <- reshape2::melt(
+      getDiet(params, n = sim@n[1,,], n_pp = sim@n_pp[1,], n_other = sim@n_other[1,], proportion = TRUE),
+      value.name = "baseline_value"
+    )
+    colnames(diet_baseline_df) <- c("Predator", "w", "Prey", "baseline_value")
+    
+    last_t <- length(times)
+    diet_last_df <- reshape2::melt(
+      getDiet(params, n = sim@n[last_t,,], n_pp = sim@n_pp[last_t,], n_other = sim@n_other[last_t,], proportion = TRUE),
+      value.name = "current_value"
+    )
+    colnames(diet_last_df) <- c("Predator", "w", "Prey", "current_value")
+    
+    diet_change <- diet_baseline_df %>%
+      left_join(diet_last_df, by = c("Predator", "w", "Prey")) %>%
+      mutate(
+        pp_change = (current_value - baseline_value) * 100,
+        Scenario  = scenario_name,
+        Model     = model_name
+      )
+    
+    diet_all_timesteps_list[[paste0(model_name, "_", scenario_name)]] <- diet_change
+  }
+}
+diet_all_timesteps_combined <- bind_rows(diet_all_timesteps_list)
+
+# ── Filter for plotting — all 5 models, target scenario ──
+target_scenario <- "species_3_4_5_6_7"
+
+diet_plot_data <- diet_all_timesteps_combined %>%
+  filter(
+    Scenario == target_scenario,
+    Predator %in% c("pikeperch", "perch"),
+    Prey != "External"
+  )
+
+# ── Per-model summary: total pp_change per model × predator × prey ──
+prey_summary_per_model <- diet_plot_data %>%
+  group_by(Model, Predator, Prey) %>%
+  summarise(
+    total_baseline = sum(baseline_value, na.rm = TRUE),
+    total_current  = sum(current_value,  na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(total_pp_change = (total_current - total_baseline) * 100)
+
+# ── Interval summary: min–max across all 5 models per predator × prey ──
+prey_summary_interval <- prey_summary_per_model %>%
+  group_by(Predator, Prey) %>%
+  summarise(
+    min_change = min(total_pp_change, na.rm = TRUE),
+    max_change = max(total_pp_change, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+ mutate(
+    label = case_when(
+      round(min_change, 0) == round(max_change, 0) ~
+        paste0(ifelse(min_change > 0, "+", ""), round(min_change, 0), "%"),
+      TRUE ~
+        paste0(ifelse(min_change > 0, "+", ""), round(min_change, 0), " – ",
+               ifelse(max_change > 0, "+", ""), round(max_change, 0), "%")
+    ),
+    mid_change  = (min_change + max_change) / 2,
+    label_color = ifelse(mid_change > 0, "#b2182b", "black"),
+    w = Inf
+  )
+
+# ── Mean across all 5 models for tile colours ──
+diet_plot_data_fill <- diet_plot_data %>%
+  group_by(w, Predator, Prey) %>%
+  summarise(pp_change = mean(pp_change, na.rm = TRUE), .groups = "drop")
+
+# ── Plot ──
+diet <- ggplot(diet_plot_data_fill, aes(x = w, y = Prey, fill = pp_change)) +
+  geom_tile(width = diff(range(log10(diet_plot_data_fill$w))) / 50) +
+  geom_text(
+    data        = prey_summary_interval,
+    aes(x = w, y = Prey, label = label),
+    inherit.aes = FALSE,
+    hjust       = -0.05,
+    size        = 3.5,
+    fontface    = "bold",
+    color       = prey_summary_interval$label_color
+  ) +
+  facet_wrap(~ Predator, scales = "free_y", ncol = 1) +
+  scale_y_discrete(
+  limits = c("pikeperch", "perch", "roach", "white_bream", "bream", "ruffe",  "small_fish", "Resource"),
+  labels = function(x) gsub("_", " ", ifelse(x == "Resource", "resource", x))
+) + 
+  scale_x_log10(limits = c(5, NA), breaks = c(1, 10, 100, 1000)) +
+  scale_fill_gradient2(
+    low      = "#2166ac",
+    mid      = "#f7f7f7",
+    high     = "#b2182b",
+    midpoint = 0,
+    limits   = c(-3, 3),
+    na.value = "#f7f7f7",
+    oob      = scales::squish,
+    name     = "Change in diet proportion (%)"
+  ) +
+  labs(
+    x        = "Predator weight (g)",
+    y        = "Prey species"
+  ) +
+  My_theme +
+  theme(
+    legend.position = "bottom",
+    axis.text.y     = element_text(angle = 0),
+    strip.text      = element_text(face = "bold"),
+    plot.margin     = margin(5, 90, 5, 5)
+  ) +
+  coord_cartesian(clip = "off")
+
+# First, I run the simulation with fishing and save it as dietF, then rename it to diet when running without fishing.
+dietF | diet
+
+diet_clean <- diet + 
+  theme(axis.text.y  = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank())
+
+combined_diet <- (dietF | diet_clean) +
+  plot_layout(guides = "collect") +
+  plot_annotation(tag_levels = "a") &
+  theme(legend.position  = "bottom",
+        legend.box       = "horizontal")
+
+diet_titled       <- dietF       + ggtitle("With fishing")
+diet_clean_titled <- diet_clean + ggtitle("Without fishing")
+
+combined_diet <- (diet_titled | diet_clean_titled) +
+  plot_layout(guides = "collect") &
+  theme(
+    legend.position  = "bottom",
+    legend.box       = "horizontal",
+    plot.title       = element_text(hjust = 0.5, face = "bold", size = 14) 
+  )
+
+combined_diet
+# ggsave("combined_diet_change_mean.tiff", combined_diet, width = 9, height = 7, dpi = 600, bg = "white")
+# ggsave("diet_change.tiff", diet, width = 6, height = 7, dpi = 600, bg = "white")
+```
+
+# Death Rate changes
+
+```{r}
+death_all_timesteps_list <- list()
+
+for (model_name in names(all_model_results)) {
+  for (scenario_name in names(all_model_results[[model_name]])) {
+    
+    sim         <- all_model_results[[model_name]][[scenario_name]]
+    params      <- sim@params
+    times       <- getTimes(sim)
+    all_species <- params@species_params$species
+    
+    get_mort_df <- function(t) {
+      pred_rate <- getPredRate(params, n = sim@n[t,,], n_pp = sim@n_pp[t,], n_other = sim@n_other[t,])
+      f_mort    <- getFMort(params, effort = sim@effort[t,])
+      
+      do.call(rbind, lapply(all_species, function(sp) {
+        idx_full <- params@w_full >= params@species_params[sp, "w_min"] &
+                    params@w_full <= params@species_params[sp, "w_max"]
+        idx      <- params@w      >= params@species_params[sp, "w_min"] &
+                    params@w      <= params@species_params[sp, "w_max"]
+        w_vals   <- params@w[idx]
+        rbind(
+          data.frame(w = w_vals, value = params@mu_b[sp, idx],           Cause = "External", Prey = sp),
+          data.frame(w = w_vals, value = f_mort[sp, idx],                Cause = "Fishing",  Prey = sp),
+          data.frame(w     = rep(w_vals, each = nrow(pred_rate)),
+                     value = c(params@interaction[, sp] * pred_rate[, idx_full]),
+                     Cause = rep(all_species, times = sum(idx)),
+                     Prey  = sp)
+        )
+      }))
+    }
+    
+    # ── Baseline (t = 1) ──
+    baseline_df <- get_mort_df(1) %>% rename(baseline_value = value)
+    
+    # Total baseline predation summed across sizes per predator × prey
+    # Computed from t=1 only — one row per predator × prey, no time inflation
+    size_total_baseline <- baseline_df %>%
+      filter(!Cause %in% c("Fishing", "External")) %>%
+      group_by(Cause, Prey) %>%
+      summarise(total_baseline = sum(baseline_value, na.rm = TRUE), .groups = "drop")
+    
+    # ── All time steps ──
+    all_times_df <- do.call(rbind, lapply(seq_along(times), function(t) {
+      get_mort_df(t) %>% mutate(time_step = times[t], time_index = t)
+    })) %>% rename(current_value = value)
+    
+    # ── Join and normalize ──
+    death_all_timesteps_list[[paste0(model_name, "_", scenario_name)]] <- all_times_df %>%
+      left_join(baseline_df %>% select(w, Cause, Prey, baseline_value), by = c("w", "Cause", "Prey")) %>%
+      left_join(size_total_baseline, by = c("Cause", "Prey")) %>%
+      mutate(
+        absolute_change   = current_value - baseline_value,
+        normalized_change = ifelse(total_baseline > 0.001,
+                                   (absolute_change / total_baseline) * 100,
+                                   NA),
+        Scenario = scenario_name,
+        Model    = model_name
+      )
+  }
+}
+
+death_all_timesteps_combined <- bind_rows(death_all_timesteps_list)
+
+```
+
+with CI
+```{r}
+# ── Filter for all 5 models ──
+target_scenario <- "species_3_4_5_6_7"
+max_t           <- max(death_all_timesteps_combined$time_index)
+
+death_heatmap_all_models <- death_all_timesteps_combined %>%
+  filter(
+    Scenario   == target_scenario,
+    !Cause     %in% c("Fishing", "External", "small_fish", "ruffe"),
+    time_index == max_t,
+    baseline_value > 0.001
+  )
+
+
+# ── Per-model summary: total % change per model × prey ──
+prey_label_per_model <- death_heatmap_all_models %>%
+  group_by(Model, Prey) %>%
+  summarise(
+    total_absolute_change = sum(absolute_change,  na.rm = TRUE),
+    total_baseline        = sum(baseline_value,   na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(pct_change = (total_absolute_change / total_baseline) * 100)
+
+# ── Interval summary: min–max across all 5 models per prey ──
+prey_interval_label <- prey_label_per_model %>%
+  group_by(Prey) %>%
+  summarise(
+    min_change = min(pct_change, na.rm = TRUE),
+    max_change = max(pct_change, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    label = case_when(
+      round(min_change, 0) == round(max_change, 0) ~
+        paste0(ifelse(min_change > 0, "+", ""), round(min_change, 0), "%"),
+      TRUE ~
+        paste0(ifelse(min_change > 0, "+", ""), round(min_change, 0), " ─ ",
+               ifelse(max_change > 0, "+", ""), round(max_change, 0), "%")
+    ),
+    mid_change  = (min_change + max_change) / 2,
+    label_color = ifelse(mid_change > 0, "#b2182b", "black"),
+    y_pos = Inf
+  )
+
+
+# For each model, Prey, Cause — find the w where normalized_change crosses zero
+zero_crossings <- death_heatmap_all_models %>%
+  group_by(Model, Prey, Cause) %>%
+  arrange(w) %>%
+  mutate(sign_change = sign(normalized_change) != sign(lag(normalized_change))) %>%
+  filter(sign_change) %>%
+  summarise(zero_w = first(w), .groups = "drop")
+
+# Summarise across models
+zero_band <- zero_crossings %>%
+  group_by(Prey, Cause) %>%
+  summarise(
+    zero_mean = mean(zero_w,   na.rm = TRUE),
+    zero_min  = min(zero_w,    na.rm = TRUE),
+    zero_max  = max(zero_w,    na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Mean across all 5 models for tile colours
+death_heatmap_final <- death_heatmap_all_models %>%
+  group_by(w, Cause, Prey) %>%
+  summarise(normalized_change = mean(normalized_change, na.rm = TRUE), .groups = "drop")
+
+prey_order <- c("small_fish", "ruffe", "bream", "white_bream",
+                "roach", "perch", "pikeperch")   # your full order, raw names
+
+death_heatmap_final$Prey  <- factor(death_heatmap_final$Prey,  levels = prey_order)
+prey_interval_label$Prey  <- factor(prey_interval_label$Prey,  levels = prey_order)
+zero_band$Prey            <- factor(zero_band$Prey,            levels = prey_order)
+
+
+death_rate <- ggplot(death_heatmap_final, aes(x = w, y = Cause, fill = normalized_change)) +
+  geom_tile() +
+  # Uncertainty band around zero-crossing
+  geom_rect(
+    data = zero_band,
+    aes(xmin = zero_min, xmax = zero_max,
+        ymin = as.numeric(factor(Cause)) - 0.5,
+        ymax = as.numeric(factor(Cause)) + 0.5),
+    inherit.aes = FALSE,
+    fill  = NA,
+    color = "black",
+    linewidth = 0.5,
+    linetype = "dashed"
+  ) +
+  # Mean zero-crossing line
+  geom_segment(
+    data = zero_band,
+    aes(x = zero_mean, xend = zero_mean,
+        y = as.numeric(factor(Cause)) - 0.5,
+        yend = as.numeric(factor(Cause)) + 0.5),
+    inherit.aes = FALSE,
+    color = "black",
+    linewidth = 0.7
+  ) +
+  geom_text(
+    data        = prey_interval_label,
+    aes(x = 1000, y = y_pos, label = label),
+    inherit.aes = FALSE,
+    vjust       = 1.5,
+    hjust       = 0,
+    size        = 3.7,
+    fontface    = "bold",
+    color       = prey_interval_label$label_color
+  ) +
+  facet_wrap(~ Prey, scales = "fixed", ncol = 1,
+           labeller = as_labeller(function(x) gsub("_", " ", x))) +
+  scale_x_log10(
+    limits = c(NA, 1000),
+    breaks = c(0.1, 1, 10, 100, 1000),
+    expand = expansion(mult = c(0.02, 0.15))
+  ) +
+  scale_fill_gradient2(
+    low      = "#2166ac",
+    mid      = "#f7f7f7",
+    high     = "#b2182b",
+    midpoint = 0,
+    limits   = c(-0.3, 0.3),
+    na.value = "grey90",
+    oob      = scales::squish,
+    name     = "Mortality rate \nchange(%)"
+  ) +
+  labs(
+    x     = "Prey weight (g)",
+    y     = "Predator species",
+    title = "Prey species"
+  ) +
+  My_theme +
+  theme(
+    plot.title      = element_text(hjust = 0.5, size = 15, family = "gillsans"),
+    legend.position = "right",
+    strip.text      = element_text(size = 10)
+    ) +
+  coord_cartesian(clip = "off")
+
+
+# ggsave("mortality rate CI change.tiff", death_rate, width = 8, height = 6, dpi = 600, bg = "white")
+```
+
+### Yield changes
+
+calibration with time series yields
+(only works after scenario with fishing)
+```{r}
+# === 1. LOAD MODELS ===
+models <- list(
+  M3  = read_rds("M6_kappa8_lambda2.05extMort01_0.333.rds"),
+  M4  = read_rds("M4_kappa7_lambda2.05extMort01_0.25.rds"),
+  M5  = read_rds("M5_kappa7_lambda2.05extMort01_0.333.rds"),
+  M12 = read_rds("M12_kappa7_lambda2.05extMort02_0.333.rds"),
+  M13 = read_rds("M7_kappa9_lambda2.05extMort01_0.333.rds")
+)
+
+
+f_data        <- read.csv("../Data/CLF_1990_2023matrix_ci.csv")
+years_data    <- f_data$Year
+main_species  <- c("Bream", "Perch", "Pikeperch", "Roach", "White_bream")
+f_main        <- as.matrix(f_data[, main_species])
+rownames(f_main) <- as.character(years_data)
+colnames(f_main) <- tolower(main_species)
+
+
+add_ramp_up <- function(effort_matrix) {
+  firstRecordedEffort <- effort_matrix[1, ]
+  ramp_years  <- 1893:1991
+  data_years  <- as.numeric(rownames(effort_matrix))
+  initial_effort1 <- matrix(0, nrow = length(ramp_years), ncol = ncol(effort_matrix),
+                             dimnames = list(as.character(ramp_years), colnames(effort_matrix)))
+  for (i in 1:ncol(effort_matrix)) {
+    initial_effort1[, i] <- seq(from = 0, to = firstRecordedEffort[i],
+                                length.out = nrow(initial_effort1))
+  }
+  combined_effort <- rbind(initial_effort1, effort_matrix)
+  rownames(combined_effort) <- as.character(c(ramp_years, data_years))
+  return(combined_effort)
+}
+
+
+### delete -  old version with constant effort
+run_model_simulation <- function(params, model_name) {
+  current_gear        <- gear_params(params)
+  current_gear$gear   <- current_gear$species
+  gear_params(params) <- current_gear
+  params <- setParams(params)
+
+  f_main_complete <- cbind(small_fish = rep(0, nrow(f_main)),
+                           ruffe      = rep(0, nrow(f_main)),
+                           f_main)
+  rownames(f_main_complete) <- as.character(years_data)
+
+  sim2 <- project(params, effort = initial_effort, t_max = 300, dt = 0.1)
+
+  species_order     <- species_params(sim2@params)$species
+  f_main_ordered    <- f_main_complete[, species_order]
+  relative_effort   <- sweep(f_main_ordered, 2, gear_params(sim2@params)$catchability, "/")
+  relative_effort[is.nan(relative_effort)] <- 0
+
+  relative_effort_full <- add_ramp_up(relative_effort)
+
+  sim3 <- project(sim2@params, effort = relative_effort_full,
+                  dt = 0.1, t_save = 1,
+                  initial_n   = sim2@n[300, , ],
+                  initial_npp = sim2@n_pp[300, ])
+
+  y <- getYield(sim3) %>%
+    melt() %>%
+    mutate(model = model_name)
+  return(y)
+}
+
+y_all_models <- lapply(names(models), function(name) {
+  run_model_simulation(models[[name]], name)
+}) %>% bind_rows()
+
+y_all_models_filtered <- y_all_models %>%
+  filter(!sp %in% c("small_fish", "ruffe"))
+
+# === 2. GET BASELINE & MATURITY DECLINE YIELDS ===
+# NOTE: all_model_results must already be loaded in your environment
+y_baseline <- data.frame()
+for (model_name in names(all_model_results)) {
+  sim       <- all_model_results[[model_name]]$no_change
+  yield_data <- getYield(sim) %>%
+    melt() %>%
+    mutate(model    = gsub(".rds", "", model_name),
+           scenario = "Baseline")
+  y_baseline <- bind_rows(y_baseline, yield_data)
+}
+
+y_maturity_decline <- data.frame()
+for (model_name in names(all_model_results)) {
+  sim       <- all_model_results[[model_name]]$species_3_4_5_6_7
+  yield_data <- getYield(sim) %>%
+    melt() %>%
+    mutate(model    = gsub(".rds", "", model_name),
+           scenario = "With maturity decline")
+  y_maturity_decline <- bind_rows(y_maturity_decline, yield_data)
+}
+
+y_baseline         <- y_baseline         %>% filter(!sp %in% c("small_fish", "ruffe"))
+y_maturity_decline <- y_maturity_decline %>% filter(!sp %in% c("small_fish", "ruffe"))
+
+# === 3. MULTIPLIER EXTRACTION & APPLICATION ===
+y_baseline_1_30 <- y_baseline %>% filter(time >= 1 & time <= 30)
+
+y_curved_remapped <- y_all_models_filtered %>%
+  filter(time >= 1993 & time <= 2022) %>%
+  mutate(time_remapped = time - 1992)
+
+curved_values <- y_curved_remapped %>%
+  select(-time) %>%
+  rename(time = time_remapped) %>%
+  arrange(model, sp, time)
+
+straight_values <- y_baseline_1_30 %>% arrange(model, sp, time)
+
+extract_all_multipliers <- function(straight_data, curved_data) {
+  straight_models <- unique(straight_data$model)
+  curved_models   <- unique(curved_data$model)
+  species_list    <- unique(straight_data$sp)
+  all_multipliers <- data.frame()
+
+  for (sp in species_list) {
+    for (i in seq_along(straight_models)) {
+      straight_model <- straight_models[i]
+      if (i <= length(curved_models)) {
+        curved_model <- curved_models[i]
+
+        straight_vals <- straight_data %>%
+          filter(model == straight_model, sp == !!sp) %>%
+          pull(value)
+
+        curved_vals <- curved_data %>%
+          filter(model == curved_model, sp == !!sp) %>%
+          pull(value)
+
+        if (length(straight_vals) > 0 && length(curved_vals) > 0) {
+          straight_constant <- straight_vals[1]
+          multipliers       <- curved_vals / straight_constant
+
+          multiplier_data <- data.frame(
+            model_straight = straight_model,
+            model_curved   = curved_model,
+            species        = sp,
+            time           = 1:length(multipliers),
+            straight_value = straight_constant,
+            curved_value   = curved_vals,
+            multiplier     = multipliers
+          )
+          all_multipliers <- rbind(all_multipliers, multiplier_data)
+        }
+      }
+    }
+  }
+  return(all_multipliers)
+}
+
+apply_all_multipliers <- function(straight_data, multiplier_table) {
+  straight_data %>%
+    left_join(multiplier_table %>% select(model_straight, species, time, multiplier),
+              by = c("model" = "model_straight", "sp" = "species", "time" = "time")) %>%
+    mutate(value_curved = value * ifelse(is.na(multiplier), 1.0, multiplier)) %>%
+    select(-multiplier, -value) %>%
+    rename(value = value_curved)
+}
+
+all_multipliers <- extract_all_multipliers(straight_values, curved_values)
+
+y_baseline_curved  <- apply_all_multipliers(y_baseline %>% filter(time <= 30), all_multipliers) %>%
+  mutate(scenario = "Baseline")
+y_maturity_curved  <- apply_all_multipliers(y_maturity_decline %>% filter(time <= 30), all_multipliers) %>%
+  mutate(scenario = "With maturity decline")
+y_final_curved     <- bind_rows(y_baseline_curved, y_maturity_curved)
+
+# === 4. REVERSED YIELD CHANGES ===
+yield_changes_reversed <- y_final_curved %>%
+  select(time, sp, model, scenario, value) %>%
+  pivot_wider(names_from = scenario, values_from = value) %>%
+  mutate(
+    absolute_change = `With maturity decline` - Baseline,
+    percent_change  = ((`With maturity decline` - Baseline) / Baseline) * 100,
+    year            = 1992 + time
+  )
+
+uncertainty_analysis_reversed <- yield_changes_reversed %>%
+  group_by(sp, time, year) %>%
+  summarise(
+    mean_percent_change = mean(percent_change, na.rm = TRUE),
+    min_percent_change  = min(percent_change,  na.rm = TRUE),
+    max_percent_change  = max(percent_change,  na.rm = TRUE),
+    n_models            = n(),
+    .groups = "drop"
+  )
+
+# === 5. CUMULATIVE LOSS LABELS ===
+cumulative_loss_labels <- uncertainty_analysis_reversed %>%
+  group_by(sp) %>%
+  summarise(
+    total_min_loss = sum(min_percent_change, na.rm = TRUE),
+    total_max_loss = sum(max_percent_change, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    label = paste0("Cumulative loss: ", round(total_max_loss, 0), " — ", round(total_min_loss, 0), "%"),
+    x_pos = 2000,
+    y_pos = -15
+  )
+
+# === 6. FINAL PLOT ===
+yield_loss <- ggplot() +
+  geom_ribbon(data = uncertainty_analysis_reversed,
+              aes(x = year, ymin = min_percent_change, ymax = max_percent_change),
+              fill = "grey70", alpha = 0.4) +
+  geom_line(data = yield_changes_reversed,
+            aes(x = year, y = percent_change, group = model),
+            color = "grey20", alpha = 0.6, linewidth = 0.7) +
+  geom_hline(yintercept = 0,    linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = -Inf, color = "gray50", linewidth = 0.3) +
+  geom_hline(yintercept = -Inf, color = "gray50", linewidth = 0.3) +
+  geom_text(data = cumulative_loss_labels,
+            aes(x = x_pos, y = y_pos, label = label),
+            size = 4, fontface = "bold", hjust = 0, nudge_x = -8,
+            inherit.aes = FALSE) +
+  facet_wrap(~sp, scales = "fixed", ncol = 2) +
+  scale_y_continuous(limits = c(-17, 0), breaks = seq(-15, 0, by = 5)) +
+  labs(x = "Time (year)", y = "Percent Change (%)") +
+  My_theme
+
+# ggsave("yield_loss.tiff", yield_loss, width = 7, height = 7, dpi = 600, bg = "white")
+```
+
+```{r}
+# === PERCENT-CHANGE PLOT (single-colour version of the orange/blue figure) ===
+# Uses y_final_curved from the multiplier workflow (curved data, time 1–30)
+
+# --- 1. Percent change per model, per species, per timestep ---
+yield_changes <- y_final_curved %>%
+  select(time, sp, model, scenario, value) %>%
+  pivot_wider(names_from = scenario, values_from = value) %>%
+  mutate(
+    percent_change = ((`With maturity decline` - Baseline) / Baseline) * 100,
+    year           = 1992 + time          # 1 -> 1993, 30 -> 2022
+  )
+
+# --- 2. Across-model min–max range (the shaded background) ---
+yield_range <- yield_changes %>%
+  group_by(sp, time, year) %>%
+  summarise(
+    min_percent_change = min(percent_change, na.rm = TRUE),
+    max_percent_change = max(percent_change, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# --- 3. Cumulative loss label per species (summed across all years) ---
+cumulative_loss_labels <- yield_range %>%
+  group_by(sp) %>%
+  summarise(
+    total_min_loss = sum(min_percent_change, na.rm = TRUE),
+    total_max_loss = sum(max_percent_change, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    label = paste0("Cumulative change: ",
+                   round(total_max_loss, 0), " – ",
+                   round(total_min_loss, 0), "%")
+  )
+
+# --- 4. Plot ---
+yield_loss <- ggplot() +
+  # shaded across-model range
+  geom_ribbon(data = yield_range,
+              aes(x = year, ymin = min_percent_change, ymax = max_percent_change),
+              fill = "grey70", alpha = 0.4) +
+  # individual model lines
+  geom_line(data = yield_changes,
+            aes(x = year, y = percent_change, group = model),
+            colour = "grey20", alpha = 0.6, linewidth = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "gray50") +
+  # cumulative loss label (top-left of each panel)
+  geom_text(data = cumulative_loss_labels,
+            aes(x = 1993, y = Inf, label = label),
+            size = 3.5, fontface = "bold",
+            hjust = 0, vjust = 1.5,
+            inherit.aes = FALSE) +
+  facet_wrap(~sp, scales = "free_y") +
+  scale_x_continuous(breaks = c(1993, 2002, 2012, 2022),
+                     labels = c("1993", "2002", "2012", "2022")) +
+  labs(x = "Year",
+       y = "Yield change (%)") +
+  My_theme +
+  theme(
+    panel.border    = element_blank(),
+    axis.line.x     = element_line(color = "gray50", linewidth = 0.3),
+    axis.line.y     = element_line(color = "gray50", linewidth = 0.3),
+    panel.spacing   = unit(1, "lines"),
+    strip.background = element_blank(),
+    strip.text      = element_text(face = "bold")
+  )
+
+yield_loss
+
+```
+
+# Size spectra change
+
+```{r}
+sf_list <- list()
+
+for (model_name in names(all_model_results)) {
+  model_results <- all_model_results[[model_name]]
+  
+  for (scenario_name in names(model_results)) {
+    sim <- model_results[[scenario_name]]
+    times <- getTimes(sim)
+    first_time <- times[1]
+    last_time  <- times[length(times)]
+    
+    # Get size class widths from the model
+    dw <- sim@params@dw
+    w  <- sim@params@w
+    
+    sf1 <- mizer::plotSpectra(sim, time_range = first_time, return_data = TRUE)
+    sf2 <- mizer::plotSpectra(sim, time_range = last_time,  return_data = TRUE)
+    
+    # Join and convert density to actual numbers by multiplying by dw
+    sf <- left_join(sf1, sf2, by = c("w", "Legend")) %>%
+      left_join(data.frame(w = w, dw = dw), by = "w") %>%
+      mutate(
+        # Convert density to numbers
+        N_first   = value.x * dw,
+        N_last    = value.y * dw,
+        # Percent change in actual numbers
+        pct_change = ((N_last - N_first) / N_first) * 100,
+        Scenario  = scenario_name,
+        Model     = gsub(".rds", "", model_name)
+      )
+    
+    sf_list[[paste(model_name, scenario_name, sep = "_")]] <- sf
+  }
+}
+
+sf_combined <- bind_rows(sf_list)
+
+
+```
+
+```{r}
+species_colors <- c(
+  "small_fish" = "#FCC300",
+  "ruffe" = "#44AA99", 
+  "bream" = "#b2182b",
+  "white_bream" = "#661100",
+  "roach" = "#AA4499",
+  "perch" = "#2166ac",
+  "pikeperch" = "#93AA00"
+)
+
+# Option A: Percent change in actual numbers
+ggplot(sf_combined %>% filter(Scenario == "species_3_4_5_6_7"),
+       aes(x = w, y = pct_change,
+           colour = Legend,
+           group = interaction(Legend, Model))) +
+  geom_line(linewidth = 1.3, alpha = 0.9) +
+  geom_hline(yintercept = 0, linetype = 1, colour = "dark grey", linewidth = 0.75) +
+  labs(x = "Weight [g]",
+       y = "Percent change in abundance (%)",
+       title = "Size spectrum change - Species 3-7 scenario",
+       colour = "Species") +
+  coord_cartesian(xlim = c(1, NA), ylim = c(-100, 150)) +
+  scale_x_log10() +
+  scale_colour_manual(values = species_colors) +
+  My_theme +
+  theme(legend.position = "bottom")
+
+```
+
+```{r}
+# 1. Get w bins
+w_bins <- all_model_results$`M5_kappa7_lambda2.05extMort01_0.333.rds`$all_species@params@w
+
+# 2. Snap thresholds to nearest bin
+w_max_final <- tibble(
+  Legend       = c("small_fish", "ruffe", "bream", "white_bream", "roach", "perch", "pikeperch"),
+  w_max_thresh = c(Inf, Inf, 2783.0279, 474.9298, 719.9572, 1107.1611, 3630.0364)
+) %>%
+  mutate(w_max_thresh = ifelse(is.infinite(w_max_thresh), Inf,
+           w_bins[sapply(w_max_thresh, function(x) which.min(abs(w_bins - x)))]))
+
+# 3. Species order
+species_order <- c("pikeperch", "bream", "perch", "roach", "white_bream", "ruffe", "small_fish")
+
+# 4. w_mat reference lines data
+w_max_t50 <- data.frame(
+  Legend        = species_params(cur_model)$species,
+  w_max_initial = species_params(cur_model)$w_max,
+  w_mat_initial = species_params(cur_model)$w_mat
+) %>%
+  mutate(
+    decrease_rate = 0.01,
+    w_max_t50 = w_max_initial * (1 - decrease_rate)^50,
+    w_mat_t50 = w_mat_initial * (1 - decrease_rate)^50,
+    w_max_t50 = ifelse(Legend %in% c("small_fish", "ruffe"), w_max_initial, w_max_t50),
+    w_mat_t50 = ifelse(Legend %in% c("small_fish", "ruffe"), w_mat_initial, w_mat_t50)
+  )
+
+# 5. Build nd_ratio ONCE (used for both plots)
+nd_ratio <- sf_combined %>%
+  filter(Scenario == "species_3_4_5_6_7", N_first > 1e-10) %>%
+  mutate(ratio = N_last / N_first) %>%
+  left_join(w_max_final, by = "Legend") %>%
+  mutate(reliable = w <= w_max_thresh)
+
+# 6. Build nd_ratio_plot for the ratio plot
+nd_ratio_plot <- bind_rows(
+  nd_ratio,
+  nd_ratio %>%
+    group_by(Legend, Model) %>%
+    slice(which(w == w_max_thresh)[1]) %>%
+    mutate(reliable = FALSE)
+) %>%
+  arrange(Legend, Model, w) %>%
+  mutate(Legend = factor(Legend, levels = species_order))
+
+# 7. Build nd_ratio_p1_plot for the pct_change plot (same data, different y)
+nd_ratio_p2_plot <- nd_ratio_plot  # identical structure, pct_change column already present
+
+# 8. Plot ratio
+ggplot() +
+  geom_line(data = nd_ratio_plot %>% filter(reliable),
+            aes(x = w, y = ratio, colour = Legend,
+                group = interaction(Legend, Model)),
+            linewidth = 0.8, alpha = 0.7, linetype = "solid") +
+  geom_line(data = nd_ratio_plot %>% filter(!reliable),
+            aes(x = w, y = ratio, colour = Legend,
+                group = interaction(Legend, Model)),
+            linewidth = 1, alpha = 0.6, linetype = "dotted") +
+  geom_hline(yintercept = 1, colour = "grey50") +
+  scale_x_log10() +
+  scale_colour_manual(values = species_colors) +
+  coord_cartesian(ylim = c(0, 3)) +
+  labs(x = "Weight [g]", y = "N_last / N_first (ratio)") +
+  My_theme +
+  theme(legend.position = "bottom")
+
+# 9. Plot pct_change (p1)
+p2 <- ggplot() +
+  geom_line(data = nd_ratio_p2_plot %>% filter(reliable),
+            aes(x = w, y = pct_change, colour = Legend,
+                group = interaction(Legend, Model)),
+            linewidth = 0.8, alpha = 0.7, linetype = "solid") +
+  geom_line(data = nd_ratio_p2_plot %>% filter(!reliable),
+            aes(x = w, y = pct_change, colour = Legend,
+                group = interaction(Legend, Model)),
+            linewidth = 1, alpha = 0.6, linetype = "dotted") +
+  geom_hline(yintercept = 0, colour = "grey50") +
+  geom_vline(data = w_max_t50,
+             aes(xintercept = w_mat_t50, colour = Legend),
+             linetype = "dashed", linewidth = 0.7) +
+  geom_vline(data = w_max_t50,
+             aes(xintercept = w_mat_initial, colour = Legend),
+             linetype = "solid", linewidth = 0.7) +
+  scale_x_log10(breaks = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 4000),
+                labels = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 4000)) +
+  scale_colour_manual(values = species_colors) +
+  coord_cartesian(ylim = c(-100, 200), xlim = c(1, NA)) +
+  labs(x = "Weight (g)", y = "Change in abundance (%)", colour = "Species") +
+  My_theme +
+  theme(legend.position = "right")
+```
+
+```{r}
+p2_inset <- ggplot(nd_ratio, aes(x = w, y = pct_change,
+                     colour = Legend,
+                     group = interaction(Legend, Model))) +
+  geom_line(linewidth = 0.8, alpha = 0.7) +
+  geom_hline(yintercept = 0, colour = "grey50") +
+  geom_vline(data = w_max_t50,
+             aes(xintercept = w_mat_t50, colour = Legend),
+             linetype = "dashed", linewidth = 0.7) +
+  scale_x_log10(breaks = c(1e-03, 1e-01, 10),
+              labels = c(1e-03, 1e-01, 10)) +
+  scale_colour_manual(values = species_colors) +
+  coord_cartesian(ylim = c(-20, 40), xlim = c(1e-03, 1e+01)) +
+  labs(x = NULL, y = NULL) +
+  My_theme +
+  theme(
+    legend.position = "none",
+    plot.background = element_rect(fill = "white", colour = "black", linewidth = 0.2),
+    panel.background = element_rect(fill = "white")
+  )
+
+# Combine with inset
+spectrum2 <- p2 + inset_element(p2_inset, left = 0.01, bottom = 0.6, right = 0.35, top = 0.99)
+
+# ggsave("size spectra1.tiff", spectrum, width = 9, height = 5, dpi = 600, bg = "white")
+```
+
+adding bar plot beneath
+
+```{r}
+# ── Step 1: rebuild p1 with correct x limits ──
+p1 <- ggplot() +
+  geom_line(data = nd_ratio_p1_plot %>% filter(reliable),
+            aes(x = w, y = pct_change, colour = Legend,
+                group = interaction(Legend, Model)),
+            linewidth = 0.8, alpha = 0.7, linetype = "solid") +
+  geom_line(data = nd_ratio_p1_plot %>% filter(!reliable),
+            aes(x = w, y = pct_change, colour = Legend,
+                group = interaction(Legend, Model)),
+            linewidth = 1, alpha = 0.6, linetype = "dotted") +
+  geom_hline(yintercept = 0, colour = "grey50") +
+  geom_vline(data = w_max_t50,
+             aes(xintercept = w_mat_t50, colour = Legend),
+             linetype = "dashed", linewidth = 0.7) +
+  geom_vline(data = w_max_t50,
+             aes(xintercept = w_mat_initial, colour = Legend),
+             linetype = "solid", linewidth = 0.7) +
+  scale_x_log10(
+    limits = c(1, 6000),
+    breaks = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 6000),
+    labels = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 6000)
+  ) +
+  scale_colour_manual(values = species_colors) +
+  coord_cartesian(ylim = c(-100, 200)) +
+  labs(x = NULL,                            # no x label — p2 carries it
+       y = "Change in abundance (%)", 
+       colour = "Species") +
+  My_theme +
+  theme(
+    legend.position = "right",
+    axis.text.x  = element_text(),          # keep tick labels on p1
+    axis.ticks.x = element_line()
+  )
+
+# ── Step 2: attach inset to p1 ──
+spectrum1 <- p1 + inset_element(p1_inset,    # your small inset plot (renamed to avoid clash)
+                               left   = 0.01, 
+                               bottom = 0.6, 
+                               right  = 0.35, 
+                               top    = 0.99)
+
+# ── Bream-only heatmap (panel b) — ALL models ──
+death_heatmap_bream_all <- death_all_timesteps_combined %>%
+  filter(
+    Scenario   == target_scenario,
+    !Cause     %in% c("Fishing", "External", "small_fish", "ruffe"),
+    time_index == max_t,
+    baseline_value > 0.001,
+    Prey       == "bream",
+    w          >= 1
+  ) 
+
+# ── Mean across models for colouring ──
+death_heatmap_bream <- death_heatmap_bream_all %>%
+  group_by(w, Cause) %>%
+  summarise(normalized_change = mean(normalized_change, na.rm = TRUE), .groups = "drop")
+
+# ── Zero-crossing band across models ──
+zero_band_bream <- death_heatmap_bream_all %>%
+  group_by(Model, Cause) %>%
+  arrange(w) %>%
+  mutate(sign_change = sign(normalized_change) != sign(lag(normalized_change))) %>%
+  filter(sign_change) %>%
+  summarise(zero_w = first(w), .groups = "drop") %>%
+  group_by(Cause) %>%
+  summarise(
+    zero_mean = mean(zero_w, na.rm = TRUE),
+    zero_min  = min(zero_w,  na.rm = TRUE),
+    zero_max  = max(zero_w,  na.rm = TRUE),
+    .groups   = "drop"
+  )
+
+# ── Plot ──
+p_heat1 <- ggplot(death_heatmap_bream, aes(x = w, y = Cause, fill = normalized_change)) +
+  geom_tile() +
+  
+  # Uncertainty band (range of zero-crossings across models)
+  geom_rect(
+    data = zero_band_bream,
+    aes(xmin = zero_min, xmax = zero_max,
+        ymin = as.numeric(factor(Cause)) - 0.5,
+        ymax = as.numeric(factor(Cause)) + 0.5),
+    inherit.aes = FALSE,
+    fill      = NA,
+    color     = "black",
+    linewidth = 0.5,
+    linetype  = "dashed"
+  ) +
+  
+  # Mean zero-crossing line
+  geom_segment(
+    data = zero_band_bream,
+    aes(x    = zero_mean, xend = zero_mean,
+        y    = as.numeric(factor(Cause)) - 0.5,
+        yend = as.numeric(factor(Cause)) + 0.5),
+    inherit.aes = FALSE,
+    color     = "black",
+    linewidth = 0.7
+  ) +
+  
+  scale_x_log10(
+    limits = c(1, 6000),
+    breaks = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 6000),
+    labels = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 6000),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  scale_fill_gradient2(
+    low      = "#2166ac", mid = "#f7f7f7", high = "#b2182b",
+    midpoint = 0, limits = c(-0.3, 0.3),
+    breaks   = c(-0.2, -0.1, 0, 0.1, 0.2),
+    labels   = c("-0.2", "-0.1", "0", "0.1", "0.2"),
+    na.value = "grey90", oob = scales::squish,
+    name     = "Predation mortality rate change (%)",
+    guide    = guide_colorbar(
+      title.position = "top",
+      barwidth       = unit(8, "lines"),
+      barheight      = unit(0.6, "lines"),
+      ticks          = TRUE,
+      label.theme    = element_text(size = 8)
+    )
+  ) +
+  labs(x = "Weight (g)", y = "Predator") +
+  My_theme +
+  theme(
+    legend.position  = "bottom",
+    legend.direction = "horizontal",
+    plot.margin      = margin(0, 5, 5, 5)
+  ) +
+  coord_cartesian(clip = "off")
+
+
+# ── Recombine ──
+final_plot1 <- spectrum1 / p_heat1 +
+  plot_layout(heights = c(4, 0.5), guides = "keep") 
+  # + plot_annotation(tag_levels = "a")
+
+final_plot1
+
+final_plot1 | final_plot2
+# ggsave("size_spectra_with_heatmap.tiff", final_plot, width = 9, height = 7, dpi = 600, bg = "white")
+```
+
+common plot
+
+```{r}
+# ── Titles go on the spectrum (p1), not the final_plot ──
+p1_fishing    <- p1 + ggtitle("With fishing") + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+        legend.position = "none")
+
+p1_no_fishing <- p2 + ggtitle("Without Fishing") + 
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+        legend.position = "none")
+
+# ── Rebuild spectrums with titled p1 ──
+spectrum_fishing    <- p1_fishing    + inset_element(p1_inset, left = 0.01, bottom = 0.6,
+                                                      right = 0.35, top = 0.99)
+spectrum_no_fishing <- p1_no_fishing + inset_element(p2_inset, left = 0.01, bottom = 0.5,
+                                                      right = 0.45, top = 0.99)
+
+# ── Rebuild final plots ──
+final_plot1 <- spectrum_fishing    / p_heat1 + plot_layout(heights = c(4, 0.5), guides = "keep")
+final_plot2 <- spectrum_no_fishing / p_heat2 + plot_layout(heights = c(4, 0.5), guides = "keep")
+
+# ── Strip y-axis from right panel ──
+final_plot2_clean <- final_plot2 & 
+  theme(axis.text.y  = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank())
+
+# ── Shared legend from p1 ──
+shared_legend <- get_legend(
+  p1 + theme(legend.position  = "bottom",
+             legend.direction = "horizontal")
+)
+
+# ── Combine panels ──
+combined <- (final_plot1 | final_plot2_clean) +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom")
+
+# ── Add shared legend below ──
+final_with_legend <- plot_grid(
+  patchworkGrob(combined),
+  shared_legend,
+  ncol        = 1,
+  rel_heights = c(1, 0.05)
+)
+
+final_with_legend
+```
+
+```{r}
+# ── p1 ──
+p1 <- ggplot() +
+  geom_line(data = nd_ratio_p1_plot %>% filter(reliable),
+            aes(x = w, y = pct_change, colour = Legend,
+                group = interaction(Legend, Model)),
+            linewidth = 0.8, alpha = 0.7, linetype = "solid") +
+  geom_line(data = nd_ratio_p1_plot %>% filter(!reliable),
+            aes(x = w, y = pct_change, colour = Legend,
+                group = interaction(Legend, Model)),
+            linewidth = 1, alpha = 0.6, linetype = "dotted") +
+  geom_hline(yintercept = 0, colour = "grey50") +
+  geom_vline(data = w_max_t50,
+             aes(xintercept = w_mat_t50, colour = Legend),
+             linetype = "dashed", linewidth = 0.7) +
+  geom_vline(data = w_max_t50,
+             aes(xintercept = w_mat_initial, colour = Legend),
+             linetype = "solid", linewidth = 0.7) +
+  scale_x_log10(
+    limits = c(1, 6000),
+    breaks = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 6000),
+    labels = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 6000)
+  ) +
+  scale_colour_manual(values = species_colors) +
+  coord_cartesian(ylim = c(-100, 200), xlim = c(1, 6000), clip = "off") +
+  labs(x = NULL, y = "Change in abundance (%)", colour = "Species") +
+  My_theme +
+  theme(legend.position = "none")  # removed here, added via shared legend later
+
+# ── Inset ──
+spectrum1 <- p1 + inset_element(p1_inset,
+                                left = 0.01, bottom = 0.6,
+                                right = 0.35, top = 0.99)
+
+# ── Heatmap data ──
+death_heatmap_bream_all <- death_all_timesteps_combined %>%
+  filter(
+    Scenario       == target_scenario,
+    !Cause         %in% c("Fishing", "External", "small_fish", "ruffe"),
+    time_index     == max_t,
+    baseline_value > 0.001,
+    Prey           == "bream",
+    w              >= 1
+  )
+
+death_heatmap_bream <- death_heatmap_bream_all %>%
+  group_by(w, Cause) %>%
+  summarise(normalized_change = mean(normalized_change, na.rm = TRUE), .groups = "drop")
+
+zero_band_bream <- death_heatmap_bream_all %>%
+  group_by(Model, Cause) %>%
+  arrange(w) %>%
+  mutate(sign_change = sign(normalized_change) != sign(lag(normalized_change))) %>%
+  filter(sign_change) %>%
+  summarise(zero_w = first(w), .groups = "drop") %>%
+  group_by(Cause) %>%
+  summarise(
+    zero_mean = mean(zero_w, na.rm = TRUE),
+    zero_min  = min(zero_w,  na.rm = TRUE),
+    zero_max  = max(zero_w,  na.rm = TRUE),
+    .groups   = "drop"
+  )
+
+# ── p_heat1 — matching x scale to p1 ──
+p_heat1 <- ggplot(death_heatmap_bream, aes(x = w, y = Cause, fill = normalized_change)) +
+  geom_tile() +
+  geom_rect(
+    data = zero_band_bream,
+    aes(xmin = zero_min, xmax = zero_max,
+        ymin = as.numeric(factor(Cause)) - 0.5,
+        ymax = as.numeric(factor(Cause)) + 0.5),
+    inherit.aes = FALSE,
+    fill = NA, color = "black", linewidth = 0.5, linetype = "dashed"
+  ) +
+  geom_segment(
+    data = zero_band_bream,
+    aes(x = zero_mean, xend = zero_mean,
+        y = as.numeric(factor(Cause)) - 0.5,
+        yend = as.numeric(factor(Cause)) + 0.5),
+    inherit.aes = FALSE,
+    color = "black", linewidth = 0.7
+  ) +
+  scale_x_log10(
+    limits = c(1, 6000),
+    breaks = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 6000),
+    labels = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 6000)
+    # no expand — matches p1 default
+  ) +
+  scale_fill_gradient2(
+    low = "#2166ac", mid = "#f7f7f7", high = "#b2182b",
+    midpoint = 0, limits = c(-0.3, 0.3),
+    breaks = c(-0.2, -0.1, 0, 0.1, 0.2),
+    labels = c("-0.2", "-0.1", "0", "0.1", "0.2"),
+    na.value = "grey90", oob = scales::squish,
+    name = "Predation mortality rate change (%)",
+    guide = guide_colorbar(
+      title.position = "top",
+      barwidth       = unit(8, "lines"),
+      barheight      = unit(0.6, "lines"),
+      ticks          = TRUE,
+      label.theme    = element_text(size = 8)
+    )
+  ) +
+  labs(x = "Weight (g)", y = "Predator") +
+  My_theme +
+  theme(
+    legend.position  = "bottom",
+    legend.direction = "horizontal",
+    plot.margin      = margin(0, 5, 5, 5)
+  ) +
+  coord_cartesian(xlim = c(1, 6000), clip = "off")  # matches p1
+
+# ── Combine ──
+final_plot1 <- spectrum1 / p_heat1 +
+  plot_layout(heights = c(4, 0.5), guides = "keep")
+
+final_plot1
+```
+
+```{r}
+# ── p1 ──
+p2 <- ggplot() +
+  geom_line(data = nd_ratio_p2_plot %>% filter(reliable),
+            aes(x = w, y = pct_change, colour = Legend,
+                group = interaction(Legend, Model)),
+            linewidth = 0.8, alpha = 0.7, linetype = "solid") +
+  geom_line(data = nd_ratio_p2_plot %>% filter(!reliable),
+            aes(x = w, y = pct_change, colour = Legend,
+                group = interaction(Legend, Model)),
+            linewidth = 1, alpha = 0.6, linetype = "dotted") +
+  geom_hline(yintercept = 0, colour = "grey50") +
+  geom_vline(data = w_max_t50,
+             aes(xintercept = w_mat_t50, colour = Legend),
+             linetype = "dashed", linewidth = 0.7) +
+  geom_vline(data = w_max_t50,
+             aes(xintercept = w_mat_initial, colour = Legend),
+             linetype = "solid", linewidth = 0.7) +
+  scale_x_log10(
+    limits = c(1, 6000),
+    breaks = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 6000),
+    labels = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 6000)
+  ) +
+  scale_colour_manual(values = species_colors) +
+  coord_cartesian(ylim = c(-100, 200), xlim = c(1, 6000), clip = "off") +
+  labs(x = NULL, y = "Change in abundance (%)", colour = "Species") +
+  My_theme +
+  theme(legend.position = "none")  # removed here, added via shared legend later
+
+# ── Inset ──
+spectrum2 <- p2 + inset_element(p2_inset,
+                                left = 0.01, bottom = 0.6,
+                                right = 0.35, top = 0.99)
+
+# ── Heatmap data ──
+death_heatmap_bream_all <- death_all_timesteps_combined %>%
+  filter(
+    Scenario       == target_scenario,
+    !Cause         %in% c("Fishing", "External", "small_fish", "ruffe"),
+    time_index     == max_t,
+    baseline_value > 0.001,
+    Prey           == "bream",
+    w              >= 1
+  )
+
+death_heatmap_bream <- death_heatmap_bream_all %>%
+  group_by(w, Cause) %>%
+  summarise(normalized_change = mean(normalized_change, na.rm = TRUE), .groups = "drop")
+
+zero_band_bream <- death_heatmap_bream_all %>%
+  group_by(Model, Cause) %>%
+  arrange(w) %>%
+  mutate(sign_change = sign(normalized_change) != sign(lag(normalized_change))) %>%
+  filter(sign_change) %>%
+  summarise(zero_w = first(w), .groups = "drop") %>%
+  group_by(Cause) %>%
+  summarise(
+    zero_mean = mean(zero_w, na.rm = TRUE),
+    zero_min  = min(zero_w,  na.rm = TRUE),
+    zero_max  = max(zero_w,  na.rm = TRUE),
+    .groups   = "drop"
+  )
+
+# ── p_heat1 — matching x scale to p1 ──
+p_heat2 <- ggplot(death_heatmap_bream, aes(x = w, y = Cause, fill = normalized_change)) +
+  geom_tile() +
+  geom_rect(
+    data = zero_band_bream,
+    aes(xmin = zero_min, xmax = zero_max,
+        ymin = as.numeric(factor(Cause)) - 0.5,
+        ymax = as.numeric(factor(Cause)) + 0.5),
+    inherit.aes = FALSE,
+    fill = NA, color = "black", linewidth = 0.5, linetype = "dashed"
+  ) +
+  geom_segment(
+    data = zero_band_bream,
+    aes(x = zero_mean, xend = zero_mean,
+        y = as.numeric(factor(Cause)) - 0.5,
+        yend = as.numeric(factor(Cause)) + 0.5),
+    inherit.aes = FALSE,
+    color = "black", linewidth = 0.7
+  ) +
+  scale_x_log10(
+    limits = c(1, 6000),
+    breaks = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 6000),
+    labels = c(1, 3, 10, 30, 100, 300, 500, 1000, 2000, 6000)
+    # no expand — matches p1 default
+  ) +
+  scale_fill_gradient2(
+    low = "#2166ac", mid = "#f7f7f7", high = "#b2182b",
+    midpoint = 0, limits = c(-0.3, 0.3),
+    breaks = c(-0.2, -0.1, 0, 0.1, 0.2),
+    labels = c("-0.2", "-0.1", "0", "0.1", "0.2"),
+    na.value = "grey90", oob = scales::squish,
+    name = "Predation mortality rate change (%)",
+    guide = guide_colorbar(
+      title.position = "top",
+      barwidth       = unit(8, "lines"),
+      barheight      = unit(0.6, "lines"),
+      ticks          = TRUE,
+      label.theme    = element_text(size = 8)
+    )
+  ) +
+  labs(x = "Weight (g)", y = "Predator") +
+  My_theme +
+  theme(
+    legend.position  = "bottom",
+    legend.direction = "horizontal",
+    plot.margin      = margin(0, 5, 5, 5)
+  ) +
+  coord_cartesian(xlim = c(1, 6000), clip = "off")  # matches p1
+
+# ── Combine ──
+final_plot2 <- spectrum2 / p_heat2 +
+  plot_layout(heights = c(4, 0.5), guides = "keep")
+
+final_plot1 | final_plot2
+
+library(cowplot)
+
+legend_heatmap <- get_legend(
+  p_heat1 + 
+    theme(
+      legend.position  = "bottom",
+      legend.direction = "horizontal"
+    ) +
+    scale_fill_gradient2(
+      low      = "#2166ac",
+      mid      = "#f7f7f7", 
+      high     = "#b2182b",
+      midpoint = 0,
+      limits   = c(-0.4, 0.4),
+      breaks   = c(-0.4, -0.2, 0, 0.2, 0.4),
+      labels   = c("-0.4", "-0.2", "0", "0.2", "0.4"),
+      na.value = "grey90",
+      oob      = scales::squish,
+      name     = "Predation mortality rate change",
+      guide    = guide_colorbar(
+        title.position = "top",
+        barwidth       = unit(10, "lines"),
+        barheight      = unit(0.8, "lines"),
+        ticks          = TRUE,
+        ticks.colour   = "black",
+        title.theme    = element_text(size = 15, color = "black"),  # title size
+        label.theme    = element_text(size = 14, color = "black")   # numbers size
+      )
+    )
+)
+```
+
+```{r}
+p1_inset <- p1_inset + theme(plot.background = element_rect(fill = "white", colour = "black", linewidth = 1))
+p2_inset <- p2_inset + theme(plot.background = element_rect(fill = "white", colour = "black", linewidth = 1))
+# ── Titles ──
+p1_titled <- p1 + ggtitle("With fishing") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+        axis.text.y = element_text(size = 13))  # increase y-axis text size
+
+p2_titled <- p2 + ggtitle("Without fishing") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+        axis.text.y = element_text(size = 13))
+
+# ── Spectrums with insets ──
+spectrum1 <- p1_titled + inset_element(p1_inset, left = 0.01, bottom = 0.6,
+                                        right = 0.35, top = 0.99)
+spectrum2 <- p2_titled + inset_element(p2_inset, left = 0.01, bottom = 0.6,
+                                        right = 0.35, top = 0.99)
+
+# ── Heatmap with larger predator labels ──
+p_heat1 <- p_heat1 + theme(axis.text.y = element_text(size = 13))
+
+p_heat2_clean <- p_heat2 +
+  theme(axis.text.y  = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank())
+
+# ── Final plots ──
+final_plot1_clean <- (spectrum1 / p_heat1) +
+  plot_layout(heights = c(4, 0.5)) &
+  theme(legend.position = "none")
+
+final_plot2_clean <- (spectrum2 / p_heat2_clean) +
+  plot_layout(heights = c(4, 0.5)) &
+  theme(legend.position = "none",
+        axis.title.y    = element_blank())
+
+library(cowplot)
+
+# ── Legends ──
+legend_species <- get_legend(
+  p1 + theme(legend.position  = "bottom",
+             legend.direction = "horizontal",
+             legend.text      = element_text(size = 17),
+             legend.title     = element_text(size = 16)) +
+    guides(colour = guide_legend(nrow = 1,
+                                 override.aes = list(linewidth = 2)))
+)
+
+legend_species <- get_legend(
+  p1 + theme(legend.position  = "bottom",
+             legend.direction = "horizontal",
+             legend.text      = element_text(size = 17),
+             legend.title     = element_text(size = 16)) +
+    guides(colour = guide_legend(nrow = 1))
+)
+
+legend_heatmap <- get_legend(
+  p_heat1 + theme(legend.position  = "bottom",
+                  legend.direction = "horizontal"),
+  title.theme    = element_text(size = 16, color = "black"),  # title size
+        label.theme    = element_text(size = 15, color = "black")   # numbers size
+)
+
+# ── Combine ──
+final_with_legend <- plot_grid(
+  patchworkGrob(final_plot1_clean | final_plot2_clean),
+  legend_heatmap,
+  legend_species,
+  ncol        = 1,
+  rel_heights = c(1, 0.08, 0.10)
+)
+
+final_with_legend
+# ggsave("final_with_legend0.tiff", final_with_legend, width = 14, height = 9, dpi = 600, bg = "white")
+
+```
+
+# biomass change in different stages of size spectrum
+
+new w_max, w_mat.. size bins
+
+```{r}
+species  <- c("small_fish", "ruffe", "bream", "white_bream", "roach", "perch", "pikeperch")
+
+# w mat25 new
+targets <- c(0.7, 2, 203.887, 12.70513, 29.6453, 53.84554, 229.9023)
+# w mat 50 new
+targets <- c(1, 3, 303.108, 19.9652, 43.56044, 99.826, 376.3138)
+# w mat75 new
+targets <- c(1.7, 5, 506.9951, 32.67033, 73.20573, 153.6715, 606.2161)
+# w max new
+targets <- c(28, 144, 2783.0279, 474.9298, 719.9572, 1107.1611, 3630.0364)
+
+data.frame(
+  species = species,
+  target  = targets,
+  bin_index = sapply(targets, function(x) which.min(abs(w_bins - x))),
+  bin_value = sapply(targets, function(x) w_bins[which.min(abs(w_bins - x))])
+)
+
+```
+
+old w max bin
+
+```{r}
+# Get w_max for each species
+w_max_species <- species_params(cur_model)$w_max
+names(w_max_species) <- species_params(cur_model)$species
+
+# Find bin index for each species w_max
+data.frame(
+  species   = species_params(cur_model)$species,
+  w_max     = w_max_species,
+  bin_index = sapply(w_max_species, function(x) which.min(abs(w_bins - x))),
+  bin_value = sapply(w_max_species, function(x) w_bins[which.min(abs(w_bins - x))])
+)
+```
+
+zero crossing bin
+
+```{r}
+zero_crossing <- nd_ratio %>%
+  filter(!Legend %in% c("small_fish", "ruffe")) %>%
+  group_by(Legend, Model) %>%
+  arrange(w) %>%
+  mutate(sign = sign(pct_change),
+         sign_change = sign != lag(sign) & lag(sign) == 1 & sign == -1) %>%
+  filter(sign_change) %>%
+  slice(n()) %>%  # take LAST crossing
+  summarise(
+    w_zero_crossing = w,
+    bin_index = which.min(abs(w_bins - w)),
+    .groups = "drop"
+  )
+
+print(zero_crossing)
+```
+
+new w mat size bin
+
+```{r}
+data.frame(
+  species   = species_params(cur_model)$species,
+  w_mat_new = w_max_t50$w_mat_t50,
+  bin_index = sapply(w_max_t50$w_mat_t50, function(x) which.min(abs(w_bins - x))),
+  bin_value = sapply(w_max_t50$w_mat_t50, function(x) w_bins[which.min(abs(w_bins - x))])
+)
+```
+
+new w mat25 size bin
+
+```{r}
+data.frame(
+  species   = species_params(cur_model)$species,
+  w_mat_new = w_max_t50$w_mat_t25,
+  bin_index = sapply(w_max_t50$w_mat_t25, function(x) which.min(abs(w_bins - x))),
+  bin_value = sapply(w_max_t50$w_mat_t25, function(x) w_bins[which.min(abs(w_bins - x))])
+)
+```
+
+what percentage of the total initial biomass was lost/gained specifically in the size classes?
+
+Absolute biomass change in each size class as a proportion of total initial biomass. This naturally weights changes by the initial biomass concentration --- a 87% loss in a size class holding only 1% of total biomass is ecologically less significant than a 12% loss in a size class holding 60% of total biomass. Size classes that were both biomass-rich and strongly affected contribute most to the total change, making this a more informative measure than within-class percentage change alone.
+
+```{r}
+n_firstM <- all_model_results$M7_kappa9_lambda2.05extMort01_0.333.rds$species_3_4_5_6_7
+n <- N(n_firstM)
+w <- w(n_firstM@params)
+
+# Total initial biomass for bream
+bins_all <- 1:200
+B_total1.3 <- sum(n[1, 3, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+
+# Each class contribution relative to TOTAL initial biomass
+bins_big  <- 191:200
+bins_mid  <- 188:190
+bins_mat  <- 162:187
+bins_small <- 1:161
+
+pct_big   <- 100 * (sum(n[1,3,bins_big]   * w_bins[bins_big]   * dw(n_firstM@params)[bins_big])   - 
+                    sum(n[51,3,bins_big]   * w_bins[bins_big]   * dw(n_firstM@params)[bins_big]))   / B_total1.3
+
+pct_mid   <- 100 * (sum(n[1,3,bins_mid]   * w_bins[bins_mid]   * dw(n_firstM@params)[bins_mid])   - 
+                    sum(n[51,3,bins_mid]   * w_bins[bins_mid]   * dw(n_firstM@params)[bins_mid]))   / B_total1.3
+
+pct_mat   <- 100 * (sum(n[1,3,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat])   - 
+                    sum(n[51,3,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat]))   / B_total1.3
+
+pct_small <- 100 * (sum(n[1,3,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small]) - 
+                    sum(n[51,3,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small])) / B_total1.3
+
+# These will now sum to the total % change
+cat("big:  ", pct_big, "\n")
+cat("mid:  ", pct_mid, "\n")
+cat("mat:  ", pct_mat, "\n")
+cat("small:", pct_small, "\n")
+cat("total:", pct_big + pct_mid + pct_mat + pct_small, "\n")
+
+# Verify against direct total
+B_total51.3 <- sum(n[51, 3, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+cat("direct total % change:", 100 * (B_total1.3 - B_total51.3) / B_total1.3, "\n")
+```
+
+white bream
+
+```{r}
+# Total initial biomass for white bream
+bins_all <- 1:200
+B_total1.4 <- sum(n[1, 4, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+
+# Each class contribution relative to TOTAL initial biomass
+bins_big  <- 169:200
+bins_mat  <- 127:168
+bins_small <- 1:126
+
+pct_big   <- 100 * (sum(n[1,4,bins_big]   * w_bins[bins_big]   * dw(n_firstM@params)[bins_big])   - 
+                    sum(n[51,4,bins_big]   * w_bins[bins_big]   * dw(n_firstM@params)[bins_big]))   / B_total1.4
+
+pct_mat   <- 100 * (sum(n[1,4,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat])   - 
+                    sum(n[51,4,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat]))   / B_total1.4
+
+pct_small <- 100 * (sum(n[1,4,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small]) - 
+                    sum(n[51,4,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small])) / B_total1.4
+
+# These will now sum to the total % change
+cat("big:  ", pct_big, "\n")
+cat("mat:  ", pct_mat, "\n")
+cat("small:", pct_small, "\n")
+cat("total:", pct_big + pct_mat + pct_small, "\n")
+
+# Verify against direct total
+B_total51.4 <- sum(n[51, 4, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+cat("direct total % change:", 100 * (B_total1.4 - B_total51.4) / B_total1.4, "\n")
+```
+
+```{r}
+# Total initial biomass for roach
+bins_all <- 1:200
+B_total1.5 <- sum(n[1, 5, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+
+# Each class contribution relative to TOTAL initial biomass
+bins_big  <- 174:200
+bins_mid  <- 157:173
+bins_mat  <- 137:156
+bins_small <- 1:136
+
+pct_big   <- 100 * (sum(n[1,5,bins_big]   * w_bins[bins_big]   * dw(n_firstM@params)[bins_big])   - 
+                    sum(n[51,5,bins_big]   * w_bins[bins_big]   * dw(n_firstM@params)[bins_big]))   / B_total1.5
+
+pct_mid   <- 100 * (sum(n[1,5,bins_mid]   * w_bins[bins_mid]   * dw(n_firstM@params)[bins_mid])   - 
+                    sum(n[51,5,bins_mid]   * w_bins[bins_mid]   * dw(n_firstM@params)[bins_mid]))   / B_total1.5
+
+pct_mat   <- 100 * (sum(n[1,5,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat])   - 
+                    sum(n[51,5,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat]))   / B_total1.5
+
+pct_small <- 100 * (sum(n[1,5,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small]) - 
+                    sum(n[51,5,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small])) / B_total1.5
+
+# These will now sum to the total % change
+cat("big:  ", pct_big, "\n")
+cat("mid:  ", pct_mid, "\n")
+cat("mat:  ", pct_mat, "\n")
+cat("small:", pct_small, "\n")
+cat("total:", pct_big + pct_mid + pct_mat + pct_small, "\n")
+
+# Verify against direct total
+B_total51.5 <- sum(n[51, 5, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+cat("direct total % change:", 100 * (B_total1.5 - B_total51.5) / B_total1.5, "\n")
+```
+
+```{r}
+# Total initial biomass for perch
+bins_all <- 1:200
+B_total1.6 <- sum(n[1, 6, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+
+# Each class contribution relative to TOTAL initial biomass
+bins_big  <- 179:200
+bins_mid  <- 172:178
+bins_mat  <- 148:171
+bins_small <- 1:147
+
+pct_big   <- 100 * (sum(n[1,6,bins_big]   * w_bins[bins_big]   * dw(n_firstM@params)[bins_big])   - 
+                    sum(n[51,6,bins_big]   * w_bins[bins_big]   * dw(n_firstM@params)[bins_big]))   / B_total1.6
+
+pct_mid   <- 100 * (sum(n[1,6,bins_mid]   * w_bins[bins_mid]   * dw(n_firstM@params)[bins_mid])   - 
+                    sum(n[51,6,bins_mid]   * w_bins[bins_mid]   * dw(n_firstM@params)[bins_mid]))   / B_total1.6
+
+pct_mat   <- 100 * (sum(n[1,6,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat])   - 
+                    sum(n[51,6,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat]))   / B_total1.6
+
+pct_small <- 100 * (sum(n[1,6,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small]) - 
+                    sum(n[51,6,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small])) / B_total1.6
+
+# These will now sum to the total % change
+cat("big:  ", pct_big, "\n")
+cat("mid:  ", pct_mid, "\n")
+cat("mat:  ", pct_mat, "\n")
+cat("small:", pct_small, "\n")
+cat("total:", pct_big + pct_mid + pct_mat + pct_small, "\n")
+
+# Verify against direct total
+B_total51.6 <- sum(n[51, 6, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+cat("direct total % change:", 100 * (B_total1.6 - B_total51.6) / B_total1.6, "\n")
+
+```
+
+```{r}
+# Total initial biomass for pikeperch
+bins_all <- 1:200
+B_total1.7 <- sum(n[1, 7, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+
+# Each class contribution relative to TOTAL initial biomass
+bins_big  <- 195:200
+bins_mid  <- 193:194
+bins_mat  <- 165:192
+bins_small <- 1:164
+
+pct_big   <- 100 * (sum(n[1,7,bins_big]   * w_bins[bins_big]   * dw(n_firstM@params)[bins_big])   - 
+                    sum(n[51,7,bins_big]   * w_bins[bins_big]   * dw(n_firstM@params)[bins_big]))   / B_total1.7
+
+pct_mid   <- 100 * (sum(n[1,7,bins_mid]   * w_bins[bins_mid]   * dw(n_firstM@params)[bins_mid])   - 
+                    sum(n[51,7,bins_mid]   * w_bins[bins_mid]   * dw(n_firstM@params)[bins_mid]))   / B_total1.7
+
+pct_mat   <- 100 * (sum(n[1,7,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat])   - 
+                    sum(n[51,7,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat]))   / B_total1.7
+
+pct_small <- 100 * (sum(n[1,7,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small]) - 
+                    sum(n[51,7,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small])) / B_total1.7
+
+# These will now sum to the total % change
+cat("big:  ", pct_big, "\n")
+cat("mid:  ", pct_mid, "\n")
+cat("mat:  ", pct_mat, "\n")
+cat("small:", pct_small, "\n")
+cat("total:", pct_big + pct_mid + pct_mat + pct_small, "\n")
+
+# Verify against direct total
+B_total51.7 <- sum(n[51, 7, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+cat("direct total % change:", 100 * (B_total1.7 - B_total51.7) / B_total1.7, "\n")
+```
+
+```{r}
+# Total initial biomass for ruffe
+bins_all <- 1:200
+B_total1.2 <- sum(n[1, 2, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+
+# Each class contribution relative to TOTAL initial biomass
+bins_mat  <- 103:200
+bins_small <- 1:102
+
+pct_mat   <- 100 * (sum(n[1,2,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat])   - 
+                    sum(n[51,2,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat]))   / B_total1.2
+
+pct_small <- 100 * (sum(n[1,2,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small]) - 
+                    sum(n[51,2,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small])) / B_total1.2
+
+# These will now sum to the total % change
+cat("mat:  ", pct_mat, "\n")
+cat("small:", pct_small, "\n")
+cat("total:", pct_mat + pct_small, "\n")
+
+# Verify against direct total
+B_total51.2 <- sum(n[51, 2, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+cat("direct total % change:", 100 * (B_total1.2 - B_total51.2) / B_total1.2, "\n")
+```
+
+```{r}
+# Total initial biomass for small fish
+bins_all <- 1:200
+B_total1.1 <- sum(n[1, 1, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+
+# Each class contribution relative to TOTAL initial biomass
+
+bins_mat  <- 89:200
+bins_small <- 1:88
+
+pct_mat   <- 100 * (sum(n[1,1,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat])   - 
+                    sum(n[51,1,bins_mat]   * w_bins[bins_mat]   * dw(n_firstM@params)[bins_mat]))   / B_total1.1
+
+pct_small <- 100 * (sum(n[1,1,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small]) - 
+                    sum(n[51,1,bins_small] * w_bins[bins_small] * dw(n_firstM@params)[bins_small])) / B_total1.1
+
+# These will now sum to the total % change
+cat("mat:  ", pct_mat, "\n")
+cat("small:", pct_small, "\n")
+cat("total:", pct_mat + pct_small, "\n")
+
+# Verify against direct total
+B_total51.1 <- sum(n[51, 1, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
+cat("direct total % change:", 100 * (B_total1.1 - B_total51.1) / B_total1.1, "\n")
+```
+
+size change table test needed for below code
+
+```{r}
+n_firstM <- all_model_results$M5_kappa7_lambda2.05extMort01_0.333.rds$species_3_4_5_6_7
+n <- N(n_firstM)
+w <- w(n_firstM@params)
+
+#install.packages("gt")
+library(gt)
+
+# ── helper ────────────────────────────────────────────────────────────────────
+compute_biomass_pct <- function(sp_idx, size_classes) {
+  # size_classes: named list of bin ranges, e.g. list(small=1:88, mat=89:200)
+  bins_all <- 1:200
+  dw_vec   <- dw(n_firstM@params)
+  w        <- w_bins
+
+  B0 <- sum(n[1,  sp_idx, bins_all] * w[bins_all] * dw_vec[bins_all])
+  B1 <- sum(n[51, sp_idx, bins_all] * w[bins_all] * dw_vec[bins_all])
+
+ # In compute_biomass_pct, change the sign:
+pcts <- sapply(size_classes, function(bins) {
+  100 * (
+    sum(n[51, sp_idx, bins] * w[bins] * dw_vec[bins]) -   # B1 first
+    sum(n[1,  sp_idx, bins] * w[bins] * dw_vec[bins])
+  ) / B0
+})
+
+c(pcts, total = sum(pcts), direct = 100 * (B1 - B0) / B0)
+}
+
+# ── species definitions ───────────────────────────────────────────────────────
+species_list <- list(
+  list(name = "Small fish",   idx = 1, classes = list(small = 1:85,   mat = 86:96, mid = 97:132, big = 133:200)),
+  list(name = "Ruffe",        idx = 2, classes = list(small = 1:98,  mat = 99:110, mid = 111:152, big = 153:200)),
+  list(name = "Bream",        idx = 3, classes = list(small = 1:157,  mat = 158:168, mid = 169:190, big = 191:200)),
+  list(name = "White bream",  idx = 4, classes = list(small = 1:121,  mat = 122:134, mid = 135:168, big = 169:200)),
+  list(name = "Roach",        idx = 5, classes = list(small = 1:132,  mat = 133:144, mid = 145:173, big = 174:200)),
+  list(name = "Perch",        idx = 6, classes = list(small = 1:140,  mat = 141:153, mid = 154:178, big = 179:200)),
+  list(name = "Pikeperch",    idx = 7, classes = list(small = 1:158,  mat = 159:171, mid = 172:194, big = 195:200))
+)
+
+```
+
+```{r}
+# ── compute for all models ────────────────────────────────────────────────────
+all_classes <- c("small", "mat", "mid", "big")
+
+compute_biomass_pct_model <- function(model_results, species_list) {
+  n_sim  <- model_results$species_3_4_5_6_7
+  n      <- N(n_sim)
+  dw_vec <- dw(n_sim@params)
+  w_bins <- w(n_sim@params)
+
+  lapply(species_list, function(sp) {
+    bins_all <- 1:200
+    B0 <- sum(n[1,  sp$idx, bins_all] * w_bins[bins_all] * dw_vec[bins_all])
+    B1 <- sum(n[51, sp$idx, bins_all] * w_bins[bins_all] * dw_vec[bins_all])
+
+    pcts <- sapply(sp$classes, function(bins) {
+      100 * (
+        sum(n[51, sp$idx, bins] * w_bins[bins] * dw_vec[bins]) -
+        sum(n[1,  sp$idx, bins] * w_bins[bins] * dw_vec[bins])
+      ) / B0
+    })
+
+    row        <- as.list(pcts[all_classes])
+    row$total  <- 100 * (B1 - B0) / B0
+    row$species <- sp$name
+    as.data.frame(row, check.names = FALSE)
+  }) |> bind_rows()
+}
+
+# Run across all 5 models
+all_results <- lapply(names(all_model_results), function(m) {
+  compute_biomass_pct_model(all_model_results[[m]], species_list) |>
+    mutate(model = m)
+}) |> bind_rows()
+
+# ── summarise: min–max range per species × size class ────────────────────────
+range_df <- all_results |>
+  group_by(species) |>
+  summarise(across(c(small, mat, mid, big, total),
+                   list(min = ~min(., na.rm = TRUE),
+                        max = ~max(., na.rm = TRUE))),
+            .groups = "drop")
+
+# ── format as "min – max" labels ─────────────────────────────────────────────
+format_range <- function(min_val, max_val) {
+  min_r <- round(min_val, 0)
+  max_r <- round(max_val, 0)
+  ifelse(
+    is.na(min_val), NA_character_,
+    ifelse(
+      min_r == max_r,
+      as.character(min_r),
+      paste0(min_r, " – ", max_r)
+    )
+  )
+}
+
+results_displayF <- range_df |>
+  mutate(
+    small = format_range(small_min, small_max),
+    mat   = format_range(mat_min,   mat_max),
+    mid   = format_range(mid_min,   mid_max),
+    big   = format_range(big_min,   big_max),
+    total = format_range(total_min, total_max)
+  ) |>
+  select(species, small, mat, mid, big, total)
+
+# ── total row: sum across species per model first, then range ─────────────────
+totals_row <- all_results |>
+  group_by(model) |>
+  summarise(across(c(small, mat, mid, big, total),
+                   ~sum(., na.rm = TRUE)),
+            .groups = "drop") |>
+  summarise(across(c(small, mat, mid, big, total),
+                   list(min = ~min(., na.rm = TRUE),
+                        max = ~max(., na.rm = TRUE)))) |>
+  mutate(
+    small   = format_range(small_min, small_max),
+    mat     = format_range(mat_min,   mat_max),
+    mid     = format_range(mid_min,   mid_max),
+    big     = format_range(big_min,   big_max),
+    total   = format_range(total_min, total_max),
+    species = "Total"
+  ) |>
+  select(species, small, mat, mid, big, total)
+
+results_displayF <- bind_rows(results_displayF, totals_row)
+
+# ── gt table ──────────────────────────────────────────────────────────────────
+results_displayF |>
+  gt(rowname_col = "species") |>
+  tab_header(
+    title    = "Biomass change by size class",
+    subtitle = "Range (min – max) across 5 models, % relative to initial total biomass at year 50"
+  ) |>
+  cols_label(
+    small = "Small",
+    mat   = "Mature",
+    mid   = "Mid",
+    big   = "Large",
+    total = "Total"
+  ) |>
+  sub_missing(missing_text = "—") |>
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) |>
+  tab_style(
+    style     = cell_fill(color = "#f0f0f0"),
+    locations = cells_body(columns = total)
+  ) |>
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_body(columns = total)
+  ) |>
+  tab_style(
+    style     = cell_text(weight = "bold", style = "italic"),
+    locations = cells_stub(rows = "Total")
+  ) |>
+  tab_style(
+    style     = cell_fill(color = "#e8e8e8"),
+    locations = cells_body(rows = species == "Total")
+  ) |>
+  tab_spanner(
+    label   = "Size class contribution (% of B₀)",
+    columns = c(small, mat, mid, big)
+  ) |>
+  opt_stylize(style = 6, color = "blue")
+
+```
+
+```{r}
+# Sum of size class totals row (small + mat + mid + big summed across species)
+all_results |>
+  group_by(model) |>
+  summarise(size_sum = sum(small, na.rm = TRUE) + 
+                       sum(mat,   na.rm = TRUE) + 
+                       sum(mid,   na.rm = TRUE) + 
+                       sum(big,   na.rm = TRUE)) |>
+  summarise(
+    min_size = min(size_sum),
+    max_size = max(size_sum)
+  )
+
+# Sum of total column (direct B1-B0 calculation summed across species)
+all_results |>
+  group_by(model) |>
+  summarise(total_sum = sum(total, na.rm = TRUE)) |>
+  summarise(
+    min_total = min(total_sum),
+    max_total = max(total_sum)
+  )
+```
+
+# no fishing number change
+
+```{r}
+n_firstM <- all_model_results$M5_kappa7_lambda2.05extMort01_0.333.rds$species_3_4_5_6_7
+n <- N(n_firstM)
+w <- w(n_firstM@params)
+
+#install.packages("gt")
+library(gt)
+
+# ── helper ────────────────────────────────────────────────────────────────────
+compute_biomass_pct <- function(sp_idx, size_classes) {
+  # size_classes: named list of bin ranges, e.g. list(small=1:88, mat=89:200)
+  bins_all <- 1:200
+  dw_vec   <- dw(n_firstM@params)
+  w        <- w_bins
+
+  B0 <- sum(n[1,  sp_idx, bins_all] * w[bins_all] * dw_vec[bins_all])
+  B1 <- sum(n[51, sp_idx, bins_all] * w[bins_all] * dw_vec[bins_all])
+
+ # In compute_biomass_pct, change the sign:
+pcts <- sapply(size_classes, function(bins) {
+  100 * (
+    sum(n[51, sp_idx, bins] * w[bins] * dw_vec[bins]) -   # B1 first
+    sum(n[1,  sp_idx, bins] * w[bins] * dw_vec[bins])
+  ) / B0
+})
+
+c(pcts, total = sum(pcts), direct = 100 * (B1 - B0) / B0)
+}
+
+# ── species definitions ───────────────────────────────────────────────────────
+species_list <- list(
+  list(name = "Small fish",   idx = 1, classes = list(small = 1:88,   mat = 89:200)),
+  list(name = "Ruffe",        idx = 2, classes = list(small = 1:102,  mat = 103:200)),
+  list(name = "Bream",        idx = 3, classes = list(small = 1:161,  mat = 162:190, big = 191:200)),
+  list(name = "White bream",  idx = 4, classes = list(small = 1:126,  mat = 127:168, big = 169:200)),
+  list(name = "Roach",        idx = 5, classes = list(small = 1:136,  mat = 137:173, big = 174:200)),
+  list(name = "Perch",        idx = 6, classes = list(small = 1:147,  mat = 148:178, big = 179:200)),
+  list(name = "Pikeperch",    idx = 7, classes = list(small = 1:164,  mat = 165:194, big = 195:200))
+)
+
+```
+
+```{r}
+# ── compute for all models ────────────────────────────────────────────────────
+all_classes <- c("small", "mat", "big")
+
+compute_biomass_pct_model <- function(model_results, species_list) {
+  n_sim  <- model_results$species_3_4_5_6_7
+  n      <- N(n_sim)
+  dw_vec <- dw(n_sim@params)
+  w_bins <- w(n_sim@params)
+
+  lapply(species_list, function(sp) {
+    bins_all <- 1:200
+    B0 <- sum(n[1,  sp$idx, bins_all] * w_bins[bins_all] * dw_vec[bins_all])
+    B1 <- sum(n[51, sp$idx, bins_all] * w_bins[bins_all] * dw_vec[bins_all])
+
+    pcts <- sapply(sp$classes, function(bins) {
+      100 * (
+        sum(n[51, sp$idx, bins] * w_bins[bins] * dw_vec[bins]) -
+        sum(n[1,  sp$idx, bins] * w_bins[bins] * dw_vec[bins])
+      ) / B0
+    })
+
+    row        <- as.list(pcts[all_classes])
+    row$total  <- 100 * (B1 - B0) / B0
+    row$species <- sp$name
+    as.data.frame(row, check.names = FALSE)
+  }) |> bind_rows()
+}
+
+# Run across all 5 models
+all_results <- lapply(names(all_model_results), function(m) {
+  compute_biomass_pct_model(all_model_results[[m]], species_list) |>
+    mutate(model = m)
+}) |> bind_rows()
+
+# ── summarise: min–max range per species × size class ────────────────────────
+range_df <- all_results |>
+  group_by(species) |>
+  summarise(across(c(small, mat, big, total),
+                   list(min = ~min(., na.rm = TRUE),
+                        max = ~max(., na.rm = TRUE))),
+            .groups = "drop")
+
+# ── format as "min – max" labels ─────────────────────────────────────────────
+format_range <- function(min_val, max_val) {
+  min_r <- round(min_val, 0)
+  max_r <- round(max_val, 0)
+  ifelse(
+    is.na(min_val), NA_character_,
+    ifelse(
+      min_r == max_r,
+      as.character(min_r),
+      paste0(min_r, " – ", max_r)
+    )
+  )
+}
+
+results_display <- range_df |>
+  mutate(
+    small = format_range(small_min, small_max),
+    mat   = format_range(mat_min,   mat_max),
+    big   = format_range(big_min,   big_max),
+    total = format_range(total_min, total_max)
+  ) |>
+  select(species, small, mat, big, total)
+
+# ── total row: sum across species per model first, then range ─────────────────
+totals_row <- all_results |>
+  group_by(model) |>
+  summarise(across(c(small, mat, big, total),
+                   ~sum(., na.rm = TRUE)),
+            .groups = "drop") |>
+  summarise(across(c(small, mat, big, total),
+                   list(min = ~min(., na.rm = TRUE),
+                        max = ~max(., na.rm = TRUE)))) |>
+  mutate(
+    small   = format_range(small_min, small_max),
+    mat     = format_range(mat_min,   mat_max),
+    big     = format_range(big_min,   big_max),
+    total   = format_range(total_min, total_max),
+    species = "Total"
+  ) |>
+  select(species, small, mat, big, total)
+
+results_display <- bind_rows(results_display, totals_row)
+
+# ── gt table ──────────────────────────────────────────────────────────────────
+results_display |>
+  gt(rowname_col = "species") |>
+  tab_header(
+    title    = "Biomass change by size class",
+    subtitle = "Range (min – max) across 5 models, % relative to initial total biomass at year 50"
+  ) |>
+  cols_label(
+    small = "Small",
+    mat   = "Mature",
+    big   = "Large",
+    total = "Total"
+  ) |>
+  sub_missing(missing_text = "—") |>
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) |>
+  tab_style(
+    style     = cell_fill(color = "#f0f0f0"),
+    locations = cells_body(columns = total)
+  ) |>
+  tab_style(
+    style     = cell_text(weight = "bold"),
+    locations = cells_body(columns = total)
+  ) |>
+  tab_style(
+    style     = cell_text(weight = "bold", style = "italic"),
+    locations = cells_stub(rows = "Total")
+  ) |>
+  tab_style(
+    style     = cell_fill(color = "#e8e8e8"),
+    locations = cells_body(rows = species == "Total")
+  ) |>
+  tab_spanner(
+    label   = "Size class contribution (% of B₀)",
+    columns = c(small, mat, big)
+  ) |>
+  opt_stylize(style = 6, color = "blue")
+
+```
+
+```{r}
+# Sum of size class totals row (small + mat + mid + big summed across species)
+all_results |>
+  group_by(model) |>
+  summarise(size_sum = sum(small, na.rm = TRUE) + 
+                       sum(mat,   na.rm = TRUE) + 
+                       sum(big,   na.rm = TRUE)) |>
+  summarise(
+    min_size = min(size_sum),
+    max_size = max(size_sum)
+  )
+
+# Sum of total column (direct B1-B0 calculation summed across species)
+all_results |>
+  group_by(model) |>
+  summarise(total_sum = sum(total, na.rm = TRUE)) |>
+  summarise(
+    min_total = min(total_sum),
+    max_total = max(total_sum)
+  )
+```
+
+# Pred kernel
+
+```{r}
+cur_model <- read_rds("M5_kappa7_lambda2.05extMort01_0.333.rds")
+pk     <- getPredKernel(cur_model)
+w_prey <- cur_model@w_full
+w_grid <- cur_model@w
+
+predators <- list(
+  list(species = "pikeperch", weight = 3000),
+  list(species = "perch",     weight = 800)
+)
+
+pk_df <- purrr::map_dfr(predators, function(pred) {
+  sp_idx   <- which(dimnames(pk)[[1]] == pred$species)
+  w_idx    <- which.min(abs(w_grid - pred$weight))
+  actual_w <- w_grid[w_idx]
+  phi      <- pk[sp_idx, w_idx, ]
+  
+  data.frame(
+    prey_w   = w_prey,
+    phi      = phi,
+    species  = pred$species,
+    actual_w = actual_w,
+    peak_w   = w_prey[which.max(phi)],  # prey weight at peak kernel
+    label    = paste0(pred$species, " (", pred$weight, " g)")
+  )
+})
+
+ggplot(pk_df, aes(x = prey_w, y = phi)) +
+  geom_line(linewidth = 1.1, color = "grey20") +
+  geom_vline(aes(xintercept = actual_w), linetype = "dashed",
+             color = "gray40", linewidth = 0.5) +
+  geom_vline(aes(xintercept = peak_w), linetype = "dashed",
+             color = "grey50", linewidth = 0.5) +
+  geom_text(aes(x = peak_w, y = max(phi) * 0.6,
+                label = paste0("Peak: ", round(peak_w, 1), " g")),
+            hjust = -0.1, size = 6, color = "grey40",
+            data = pk_df %>% distinct(label, peak_w, .keep_all = TRUE)) +
+  coord_cartesian(xlim = c(0, 500)) +
+  scale_x_continuous(labels = scales::comma) +
+  facet_wrap2(~ label, axes = "all") +   # forces axes on all facets
+  labs(
+    x = "Prey weight (g)",
+    y = "Predation kernel φ"
+  ) +
+  My_theme +
+  theme(
+    axis.line.x.bottom = element_line(color = "black", linewidth = 0.5),
+    axis.line.y.left   = element_line(color = "black", linewidth = 0.5)
+  )
+```
+
+Predation change
+
+predation rate = integral over all predator sizes of (predation kernel × predator abundance)
+```{r}
+sim    <- all_model_results[["M5_kappa7_lambda2.05extMort01_0.333.rds"]][["species_3_4_5_6_7"]]
+params <- sim@params
+
+t_first <- 1
+t_last  <- dim(sim@n)[1]
+
+n_first    <- sim@n[t_first, , ]
+n_last     <- sim@n[t_last, , ]
+n_pp_first <- sim@n_pp[t_first, ]
+n_pp_last  <- sim@n_pp[t_last, ]
+
+# Predation rate over prey size grid (w_full)
+pr_first <- getPredRate(params, n = n_first, n_pp = n_pp_first)
+pr_last  <- getPredRate(params, n = n_last,  n_pp = n_pp_last)
+
+sp_idx   <- which(dimnames(pr_first)[[1]] == "pikeperch")
+w_prey   <- params@w_full
+
+pr_df <- bind_rows(
+  data.frame(prey_w = w_prey, pred_rate = pr_first[sp_idx, ], version = "First time step (t=0)"),
+  data.frame(prey_w = w_prey, pred_rate = pr_last[sp_idx, ],  version = "Last time step (t=50)")
+)
+
+ggplot(pr_df, aes(x = prey_w, y = pred_rate, color = version)) +
+  geom_line(linewidth = 1) +
+  scale_color_manual(values = c("First time step (t=0)" = "#93AA00",
+                                "Last time step (t=50)" = "#2166ac")) +
+  coord_cartesian(xlim = c(0, 500)) +
+  scale_x_continuous(labels = scales::comma) +
+  labs(
+    title    = "Predation rate — pikeperch",
+    subtitle = "Scenario: w_mat decline in species 3–7",
+    x        = "Prey weight (g)",
+    y        = "Predation rate",
+    color    = NULL,
+    caption  = "Model: M5_kappa7_lambda2.05extMort01_0.333"
+  ) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.3),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    axis.line          = element_line(color = "black", linewidth = 0.5),
+    axis.text          = element_text(size = 9, color = "black"),
+    axis.title         = element_text(size = 11, face = "bold"),
+    axis.ticks         = element_line(color = "black", linewidth = 0.5),
+    plot.title         = element_text(size = 13, face = "bold"),
+    plot.subtitle      = element_text(size = 10, color = "gray40"),
+    plot.background    = element_rect(fill = "white", color = NA),
+    plot.margin        = margin(10, 15, 10, 10),
+    legend.position    = "top"
+  )
+
+```
+
+
+# Yields with true effort
+
+```{r}
+psi_at_t <- function(params, t) {
+  op  <- params@other_params$psi
+  idx <- floor(t) + 1
+  idx <- max(1, min(idx, dim(op)[1]))   # clamp to valid range
+  list(psi = op[idx, , ])
+}
+
+# === REALISTIC YEAR-BY-YEAR EFFORT: baseline vs decline ===
+
+# --- 0. Effort matrix + spin-up state (unchanged) ---
+build_realistic_effort <- function(params) {
+  current_gear        <- gear_params(params)
+  current_gear$gear   <- current_gear$species
+  gear_params(params) <- current_gear
+  params <- setParams(params)
+
+  f_main_complete <- cbind(small_fish = rep(0, nrow(f_main)),
+                           ruffe      = rep(0, nrow(f_main)),
+                           f_main)
+  rownames(f_main_complete) <- as.character(years_data)
+
+  sim2 <- project(params, effort = initial_effort, t_max = 300, dt = 0.1)
+
+  species_order   <- species_params(sim2@params)$species
+  f_main_ordered  <- f_main_complete[, species_order]
+  relative_effort <- sweep(f_main_ordered, 2,
+                           gear_params(sim2@params)$catchability, "/")
+  relative_effort[is.nan(relative_effort)] <- 0
+
+  list(
+    effort_full = add_ramp_up(relative_effort),   # rows named 1893:2023
+    n_init      = sim2@n[300, , ],
+    npp_init    = sim2@n_pp[300, ]
+  )
+}
+
+# --- 1. psi-array builder (unchanged; 31 rows for times 0:30) ---
+make_psi_array <- function(params, decrease_rate, n_years = 30) {
+  times   <- 0:n_years
+  species <- species_params(params)$species
+  n_sp    <- length(species)
+  w       <- params@w
+
+  psi_array <- array(NA, dim = c(length(times), n_sp, length(w)),
+                     dimnames = list(time = times, sp = species, w = w))
+
+  w_mat_array   <- matrix(NA, length(times), n_sp)
+  w_mat25_array <- w_mat_array
+  w_max_array   <- w_mat_array
+
+  w_mat_cur   <- params@species_params$w_mat
+  w_mat25_cur <- params@species_params$w_mat25
+  w_max_cur   <- params@species_params$w_max
+
+  for (i in seq_along(times)) {
+    w_mat_array[i, ]   <- w_mat_cur
+    w_mat25_array[i, ] <- w_mat25_cur
+    w_max_array[i, ]   <- w_max_cur
+    w_mat_cur   <- w_mat_cur   * (1 - decrease_rate)
+    w_mat25_cur <- w_mat25_cur * (1 - decrease_rate)
+    w_max_cur   <- w_max_cur   * (1 - decrease_rate)
+  }
+
+  m <- params@species_params$m
+  n <- params@species_params$n
+
+  for (t in seq_along(times)) {
+    for (sp in seq_len(n_sp)) {
+      w_mat_t   <- w_mat_array[t, sp]
+      w_mat25_t <- w_mat25_array[t, sp]
+      w_rmax    <- w_max_array[t, sp]
+      if (!is.na(w_mat_t) && !is.na(w_mat25_t) && w_mat_t > w_mat25_t) {
+        U        <- log(3) / log(w_mat_t / w_mat25_t)
+        maturity <- (1 + (w / w_mat_t)^(-U))^(-1)
+        maturity[maturity < 1e-08] <- 0
+        repro_prop <- (w / w_rmax)^(m[sp] - n[sp])
+        repro_prop[repro_prop > 1] <- 1
+        psi <- maturity * repro_prop
+        psi[psi > 1] <- 1
+        psi[w > w_rmax] <- 1
+        psi_array[t, sp, ] <- psi
+      } else {
+        psi_array[t, sp, ] <- 0
+      }
+    }
+  }
+  psi_array
+}
+
+# --- 2. Run one model: spin up to 1992, then project 1993-2022 ---
+#     under YEAR-BY-YEAR historical effort + time-varying psi.
+decline_start <- 1993
+decline_end   <- 2022                          # 30 steps -> times 0:30
+n_years       <- decline_end - decline_start + 1   # = 30
+
+run_realistic_decline <- function(params, decrease_rate) {
+  re   <- build_realistic_effort(params)
+  eff  <- re$effort_full
+  yrs  <- as.numeric(rownames(eff))
+
+  # State at end of 1992 (start of decline window)
+  hist_rows <- yrs <= (decline_start - 1)       # 1893..1992
+  sim_hist  <- project(params, effort = eff[hist_rows, , drop = FALSE],
+                        dt = 0.1, t_save = 1,
+                        initial_n   = re$n_init,
+                        initial_n_pp = re$npp_init)
+  last <- dim(sim_hist@n)[1]
+  n0   <- sim_hist@n[last, , ]
+  npp0 <- sim_hist@n_pp[last, ]
+
+  # Projection-window effort: 1993..2022 (year-by-year, real variation)
+  proj_rows   <- yrs >= decline_start & yrs <= decline_end
+  effort_proj <- eff[proj_rows, , drop = FALSE]   # 30 rows
+
+  p2 <- params
+  p2@other_params$psi <- make_psi_array(p2, decrease_rate, n_years)
+  p2 <- setRateFunction(p2, "ERepro", "timeVaryingERepro")
+
+  project(p2, dt = 0.1, t_save = 1,
+          effort      = effort_proj,
+          initial_n   = n0,
+          initial_n_pp = npp0)
+}
+
+# --- 3. Loop models x {baseline, decline} ---
+decline_rate  <- c(0, 0, 0.01, 0.01, 0.01, 0.01, 0.01)
+baseline_rate <- rep(0, 7)
+
+realistic_results <- list()
+for (mn in names(models)) {
+  cat("Model:", mn, "\n")
+  realistic_results[[mn]] <- list(
+    Baseline                = run_realistic_decline(models[[mn]], baseline_rate),
+    `With maturity decline` = run_realistic_decline(models[[mn]], decline_rate)
+  )
+}
+
+# --- 4. Tidy yields ---
+get_yield_df <- function(res, mn, scen) {
+  yld <- getYield(res)                 # rows = saved timesteps
+  n_t <- nrow(yld)
+  yld %>% melt() %>%
+    mutate(model = mn, scenario = scen) %>%
+    filter(!sp %in% c("small_fish", "ruffe")) %>%
+    # overwrite whatever 'time' melt produced with a clean step index
+    group_by(sp) %>%
+    mutate(step = row_number() - 1) %>%   # 0,1,2,... per species
+    ungroup() %>%
+    mutate(year = decline_start + step)   # 1993, 1994, ...
+}
+
+y_realistic <- bind_rows(lapply(names(realistic_results), function(mn) {
+  bind_rows(
+    get_yield_df(realistic_results[[mn]]$Baseline, mn, "Baseline"),
+    get_yield_df(realistic_results[[mn]]$`With maturity decline`, mn, "With maturity decline")
+  )
+}))
+
+```
+
+```{r}
+combined_biomass_data <- data.frame()
+
+for (model_name in names(realistic_results)) {
+  for (scenario_name in names(realistic_results[[model_name]])) {
+    sim <- realistic_results[[model_name]][[scenario_name]]
+    biomass <- getBiomass(sim)
+
+    biomass_long <- as.data.frame(biomass) %>%
+      mutate(time = as.numeric(rownames(biomass))) %>%
+      pivot_longer(cols = -time, names_to = "species", values_to = "biomass") %>%
+      mutate(model = model_name, scenario = scenario_name)
+
+    combined_biomass_data <- bind_rows(combined_biomass_data, biomass_long)
+  }
+}
+
+biomass_change_summary <- combined_biomass_data %>%
+  group_by(model, scenario, species) %>%
+  mutate(biomass_change_percent = (biomass - first(biomass)) / first(biomass) * 100) %>%
+  ungroup() %>%
+  group_by(scenario, species, time) %>%
+  summarise(
+    mean_change   = mean(biomass_change_percent),
+    median_change = median(biomass_change_percent),
+    min_change    = min(biomass_change_percent),
+    max_change    = max(biomass_change_percent),
+    .groups = 'drop'
+  ) %>%
+  mutate(scenario_label = scenario)   # "Baseline" / "With maturity decline"
+
+species_colors <- c(
+  "small_fish"  = "#FCC300",
+  "ruffe"       = "#44AA99",
+  "bream"       = "#b2182b",
+  "white_bream" = "#661100",
+  "roach"       = "#AA4499",
+  "perch"       = "#2166ac",
+  "pikeperch"   = "#93AA00"
+)
+
+p0 <- ggplot(biomass_change_summary,
+             aes(x = time, y = mean_change, color = species, fill = species)) +
+  geom_ribbon(aes(ymin = min_change, ymax = max_change), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", alpha = 0.7) +
+  facet_wrap2(~ scenario_label, scales = "fixed", ncol = 1,
+              axes = "all", remove_labels = "x") +
+  labs(x = "Time (years)", y = "Biomass Change (%)",
+       color = "Species", fill = "Species") +
+  scale_color_manual(values = species_colors) +
+  scale_fill_manual(values = species_colors) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.3),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    panel.border       = element_blank(),
+    axis.line.x.bottom = element_line(color = "black", linewidth = 0.5),
+    axis.line.y.left   = element_line(color = "black", linewidth = 0.5),
+    strip.background   = element_blank(),
+    strip.text  = element_text(size = 10, face = "bold", hjust = 0, margin = margin(b = 5)),
+    axis.line   = element_line(color = "black", linewidth = 0.5),
+    axis.text   = element_text(size = 9, color = "black"),
+    axis.title  = element_text(size = 11, face = "bold"),
+    axis.ticks  = element_line(color = "black", linewidth = 0.5),
+    legend.position   = "right",
+    legend.title      = element_text(size = 10, face = "bold"),
+    legend.text       = element_text(size = 9),
+    legend.key        = element_blank(),
+    legend.background = element_blank(),
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.margin     = margin(10, 10, 10, 10),
+    plot.subtitle   = element_text(size = 9, hjust = 0.5)
+  )
+
+print(p0)
+
+baseline_diff_summary <- combined_biomass_data %>%
+  group_by(model, scenario, species) %>%
+  mutate(biomass_change_percent = (biomass - first(biomass)) / first(biomass) * 100) %>%
+  ungroup() %>%
+  select(model, species, time, scenario, biomass_change_percent) %>%
+  pivot_wider(names_from = scenario, values_from = biomass_change_percent) %>%
+  mutate(diff = `With maturity decline` - Baseline) %>%
+  group_by(species, time) %>%
+  summarise(
+    mean_diff = mean(diff),
+    min_diff  = min(diff),
+    max_diff  = max(diff),
+    .groups = 'drop'
+  )
+
+p_diff <- ggplot(baseline_diff_summary,
+                 aes(x = time, y = mean_diff, color = species, fill = species)) +
+  geom_ribbon(aes(ymin = min_diff, ymax = max_diff), alpha = 0.2, color = NA) +
+  geom_line(linewidth = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50", alpha = 0.7) +
+  labs(x = "Time (years)",
+       y = "Difference from baseline (%)",
+       color = "Species", fill = "Species") +
+  scale_color_manual(values = species_colors) +
+  scale_fill_manual(values = species_colors) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.y = element_line(color = "gray90", linewidth = 0.3),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor   = element_blank(),
+    axis.line.x.bottom = element_line(color = "black", linewidth = 0.5),
+    axis.line.y.left   = element_line(color = "black", linewidth = 0.5),
+    axis.text   = element_text(size = 9, color = "black"),
+    axis.title  = element_text(size = 11, face = "bold"),
+    axis.ticks  = element_line(color = "black", linewidth = 0.5),
+    legend.position   = "right",
+    legend.title      = element_text(size = 10, face = "bold"),
+    legend.text       = element_text(size = 9),
+    legend.key        = element_blank(),
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.margin     = margin(10, 10, 10, 10)
+  )
+
+print(p_diff)
+```
+
+
+```{r}
+sp_order
+# compare against the order panels actually appear:
+sort(unique(as.character(abs_band_tonnes$sp)))
+
+
+effort_long <- as.data.frame(f_main) %>%
+  tibble::rownames_to_column("year") %>%
+  mutate(year = as.numeric(year)) %>%
+  tidyr::pivot_longer(-year, names_to = "sp", values_to = "effort")
+
+scale_tbl <- abs_band_tonnes %>%
+  group_by(sp) %>% summarise(ymax_panel = max(ymax, na.rm = TRUE), .groups = "drop") %>%
+  left_join(
+    effort_long %>% group_by(sp) %>% summarise(emax = max(effort, na.rm = TRUE), .groups = "drop"),
+    by = "sp"
+  ) %>%
+  mutate(sf = ymax_panel / emax)
+
+effort_long <- effort_long %>%
+  left_join(scale_tbl, by = "sp") %>%
+  mutate(effort_scaled = effort * sf)
+
+library(ggh4x)
+sp_order <- levels(factor(abs_band_tonnes$sp))   # panel order top-left → bottom-right
+
+y_scales <- lapply(sp_order, function(s) {
+  sf  <- scale_tbl$sf[scale_tbl$sp == s]
+  emx <- scale_tbl$emax[scale_tbl$sp == s]
+  brks <- pretty(c(0, emx), n = 3)
+  brks <- brks[brks <= emx * 1.02]
+  scale_y_continuous(
+    limits   = c(0, NA),
+    expand   = expansion(mult = c(0, 0.05)),
+    sec.axis = sec_axis(~ . / sf, name = "Fishing mortality (F)", breaks = brks)
+  )
+})
+```
+
+```{r}
+# ============================================================
+# SETUP / CALCULATIONS
+# ============================================================
+library(ggh4x)
+
+area_km2 <- 381.6
+
+# --- Absolute yield band (ribbon data), converted to tonnes ---
+abs_band <- y_realistic %>%
+  group_by(sp, year, scenario) %>%
+  summarise(ymin = min(value), ymax = max(value),
+            ymean = mean(value), .groups = "drop")
+
+abs_band_tonnes <- abs_band %>%
+  mutate(
+    ymin  = ymin  * area_km2,
+    ymax  = ymax  * area_km2,
+    ymean = ymean * area_km2
+  )
+
+# Drop unused factor levels (small_fish, ruffe have no panels here)
+# so panels render only for species present, in factor-level order:
+# bream, white_bream, roach, perch, pikeperch
+abs_band_tonnes$sp <- droplevels(abs_band_tonnes$sp)
+
+# --- Cumulative loss labels (from percent-change pipeline) ---
+yield_changes <- y_realistic %>%
+  select(step, year, sp, model, scenario, value) %>%
+  pivot_wider(names_from = scenario, values_from = value) %>%
+  mutate(percent_change = ((`With maturity decline` - Baseline) / Baseline) * 100)
+
+uncertainty <- yield_changes %>%
+  group_by(sp, step, year) %>%
+  summarise(min_percent_change = min(percent_change, na.rm = TRUE),
+            max_percent_change = max(percent_change, na.rm = TRUE),
+            .groups = "drop")
+
+cumulative_loss_labels <- uncertainty %>%
+  group_by(sp) %>%
+  summarise(total_min_loss = sum(min_percent_change, na.rm = TRUE),
+            total_max_loss = sum(max_percent_change, na.rm = TRUE),
+            .groups = "drop") %>%
+  mutate(label = paste0("Cumulative loss: ", round(total_max_loss, 0),
+                        " — ", round(total_min_loss, 0), "%"),
+         x_pos = decline_end - 1, y_pos = -1)
+
+# --- Effort data (F values) reshaped long, names matched to yield ---
+effort_long <- as.data.frame(f_main) %>%
+  tibble::rownames_to_column("year") %>%
+  mutate(year = as.numeric(year)) %>%
+  tidyr::pivot_longer(-year, names_to = "sp", values_to = "effort")
+
+# Align effort sp factor to the same levels/order as the yield data
+effort_long$sp <- factor(effort_long$sp, levels = levels(abs_band_tonnes$sp))
+
+# --- Per-species scale factor (yield max / effort max) ---
+scale_tbl <- abs_band_tonnes %>%
+  group_by(sp) %>% summarise(ymax_panel = max(ymax, na.rm = TRUE), .groups = "drop") %>%
+  left_join(
+    effort_long %>% group_by(sp) %>% summarise(emax = max(effort, na.rm = TRUE), .groups = "drop"),
+    by = "sp"
+  ) %>%
+  mutate(sf = ymax_panel / emax)
+
+# sanity check — should have NO NA / Inf in emax or sf
+print(scale_tbl)
+
+effort_long <- effort_long %>%
+  left_join(scale_tbl, by = "sp") %>%
+  mutate(effort_scaled = effort * sf)
+
+# ============================================================
+# PER-PANEL Y-SCALES
+# ============================================================
+# Panel render order = factor levels, restricted to species present
+sp_order <- levels(abs_band_tonnes$sp)
+sp_order <- sp_order[sp_order %in% unique(as.character(abs_band_tonnes$sp))]
+# → bream, white_bream, roach, perch, pikeperch
+
+y_scales <- lapply(sp_order, function(s) {
+  row <- scale_tbl[scale_tbl$sp == s, ]
+  sf  <- row$sf
+  emx <- row$emax
+
+  # No valid effort for this species → plain axis, no secondary axis
+  if (length(sf) == 0 || is.na(sf) || !is.finite(sf) || sf <= 0) {
+    return(scale_y_continuous(limits = c(0, NA),
+                              expand = expansion(mult = c(0, 0.05))))
+  }
+
+  brks <- pretty(c(0, emx), n = 3)
+  brks <- brks[brks > 0 & brks <= emx]          # valid interior ticks only
+  if (length(brks) == 0) brks <- round(emx, 2)  # guard: never empty
+
+  scale_y_continuous(
+    limits   = c(0, NA),
+    expand   = expansion(mult = c(0, 0.05)),
+    sec.axis = sec_axis(~ . / sf, name = "Fishing mortality (F)",
+                        breaks = c(0, brks))
+  )
+})
+
+# ============================================================
+# PLOT
+# ============================================================
+yield_absolute <- ggplot() +
+  geom_ribbon(data = abs_band_tonnes,
+              aes(x = year, ymin = ymin, ymax = ymax, fill = scenario),
+              alpha = 0.7) +
+  geom_vline(xintercept = -Inf, color = "gray5", linewidth = 0.3) +
+  geom_hline(yintercept = -Inf, color = "gray5", linewidth = 0.3) +
+  geom_line(data = effort_long,
+            aes(x = year, y = effort_scaled),
+            color = "gray5", linewidth = 0.3, inherit.aes = FALSE) +
+  geom_text(data = cumulative_loss_labels,
+            aes(x = x_pos, y = -Inf, label = label),
+            size = 4, fontface = "bold", hjust = 0.95, vjust = -0.5,
+            inherit.aes = FALSE) +
+  facet_wrap2(~sp, scales = "free_y", ncol = 2,
+              labeller = as_labeller(function(x) gsub("_", " ", x))) +
+  facetted_pos_scales(y = y_scales) +
+  scale_color_manual(values = c("Baseline" = "grey40",
+                                "With maturity decline" = "firebrick"),
+                     labels = c("Baseline" = "Baseline",
+                                "With maturity decline" = "Declining size at maturity")) +
+  scale_fill_manual(values  = c("Baseline" = "grey40",
+                                "With maturity decline" = "firebrick"),
+                    labels  = c("Baseline" = "Baseline",
+                                "With maturity decline" = "Declining size at maturity")) +
+  labs(x = "Time (year)", y = "Yield (tonnes)", color = NULL, fill = NULL) +
+  My_theme +
+  theme(
+  legend.position    = "bottom",
+  axis.line.y.right  = element_line(color = "gray5", linewidth = 0.3)
+)
+
+yield_absolute
+
+# ggsave("yield_absoluteF.tiff", yield_absolute, width = 9, height = 8, dpi = 600, bg = "white")
+```
+
+
+```{r}
+# Convert yields to tonnes by multiplying by area
+area_km2 <- 381.6
+
+# === PLOT A: ABSOLUTE YIELDS (wiggles visible) ===
+abs_band <- y_realistic %>%
+  group_by(sp, year, scenario) %>%
+  summarise(ymin = min(value), ymax = max(value),
+            ymean = mean(value), .groups = "drop")
+
+abs_band_tonnes <- abs_band %>%
+  mutate(
+    ymin  = ymin  * area_km2,
+    ymax  = ymax  * area_km2,
+    ymean = ymean * area_km2
+  )
+
+# ggsave("yield_loss.tiff", yield_loss, width = 7, height = 7, dpi = 600, bg = "white")
+
+yield_absolute <- ggplot() +
+  geom_ribbon(data = abs_band_tonnes,
+              aes(x = year, ymin = ymin, ymax = ymax, fill = scenario),
+              alpha = 0.7) +
+  geom_vline(xintercept = -Inf, color = "gray5", linewidth = 0.3) +
+  geom_hline(yintercept = -Inf, color = "gray5", linewidth = 0.3) +
+  geom_line(data = effort_long,
+          aes(x = year, y = effort_scaled),
+          color = "black", linewidth = 0.3, inherit.aes = FALSE) +
+  #geom_line(data = abs_band_tonnes,
+  #          aes(x = year, y = ymean, color = scenario),
+  #          linewidth = 0.8) +
+  geom_text(data = cumulative_loss_labels,
+          aes(x = x_pos, y = -Inf, label = label),
+          size = 4, fontface = "bold", hjust = 1, vjust = -0.5,
+          inherit.aes = FALSE) +
+  facet_wrap2(~sp, scales = "free_y", ncol = 2,
+            labeller = as_labeller(function(x) gsub("_", " ", x))) +
+  facetted_pos_scales(y = y_scales) +
+  scale_color_manual(values = c("Baseline" = "grey40",
+                                "With maturity decline" = "firebrick"),
+                     labels = c("Baseline" = "Baseline",
+                                "With maturity decline" = "Declining size at maturity")) +
+  scale_fill_manual(values  = c("Baseline" = "grey40",
+                                "With maturity decline" = "firebrick"),
+                    labels  = c("Baseline" = "Baseline",
+                                "With maturity decline" = "Declining size at maturity")) +
+  labs(x = "Time (year)", y = "Yield (tonnes)", color = NULL, fill = NULL) +
+  My_theme +
+  theme(legend.position = "bottom")
+
+# ggsave("yield_absolute.tiff", yield_absolute, width = 8, height = 8, dpi = 600, bg = "white")
+
+# === PLOT B: PERCENT CHANGE (smooth maturity signal) ===
+yield_changes <- y_realistic %>%
+  select(step, year, sp, model, scenario, value) %>%
+  pivot_wider(names_from = scenario, values_from = value) %>%
+  mutate(percent_change = ((`With maturity decline` - Baseline) / Baseline) * 100)
+
+uncertainty <- yield_changes %>%
+  group_by(sp, step, year) %>%
+  summarise(min_percent_change = min(percent_change, na.rm = TRUE),
+            max_percent_change = max(percent_change, na.rm = TRUE),
+            .groups = "drop")
+
+cumulative_loss_labels <- uncertainty %>%
+  group_by(sp) %>%
+  summarise(total_min_loss = sum(min_percent_change, na.rm = TRUE),
+            total_max_loss = sum(max_percent_change, na.rm = TRUE),
+            .groups = "drop") %>%
+  mutate(label = paste0("Cumulative loss: ", round(total_max_loss, 0),
+                        " — ", round(total_min_loss, 0), "%"),
+         x_pos = decline_end - 1, y_pos = -1)
+
+
+yield_loss <- ggplot() +
+  geom_ribbon(data = uncertainty,
+              aes(x = year, ymin = min_percent_change, ymax = max_percent_change),
+              fill = "grey70", alpha = 0.4) +
+  geom_line(data = yield_changes,
+            aes(x = year, y = percent_change, group = model),
+            color = "grey20", alpha = 0.6, linewidth = 0.7) +
+  geom_hline(yintercept = 0,    linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = -Inf, color = "gray5", linewidth = 0.3) +
+  geom_hline(yintercept = -Inf, color = "gray5", linewidth = 0.3) +
+  geom_text(data = cumulative_loss_labels,
+            aes(x = x_pos, y = y_pos, label = label),
+            size = 4, fontface = "bold", hjust = 1, vjust = 1, inherit.aes = FALSE) +
+  facet_wrap(~sp, scales = "fixed", ncol = 2,
+            labeller = as_labeller(function(x) gsub("_", " ", x))) +
+  labs(x = "Time (year)", y = "Percent change (%)") +
+  My_theme
+
+# ggsave("yield_loss.tiff", yield_loss, width = 7, height = 7, dpi = 600, bg = "white")
+
+# write.csv(abs_band, "abs_band.csv", row.names = FALSE)
+```
+
+
+-------------THE END---------- 🐟🎣
