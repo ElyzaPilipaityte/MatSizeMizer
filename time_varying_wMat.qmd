@@ -7,7 +7,6 @@ editor_options:
   chunk_output_type: console
 ---
 
-
 clear memory
 
 ```{r}
@@ -188,6 +187,7 @@ cat("\nAll simulations complete!\n")
 ```
 
 upper and lower values used
+
 ```{r}
 # Extracting biomass data from all models
 combined_biomass_data <- data.frame()
@@ -506,12 +506,13 @@ p_fisihng <- ggplot(changes_summary, aes(x = Species, y = Scenario_label, fill =
   )
 
 ```
+
 I ran all the code for changes in diets, mortality, and size spectrum first, because I did not create separate code chunks for fished and unfished scenarios. Sometimes I rename the plot and save it so I can combine both the fished and unfished plots.
 
 # Without fishing
 
-Unfished biomass in five models
-I want to check unfished biomass in equilibrium conditions
+Unfished biomass in five models I want to check unfished biomass in equilibrium conditions
+
 ```{r}
 eq_biomass_all <- list()
 
@@ -730,6 +731,7 @@ cat("========================================\n")
 ```
 
 upper and lower values used biomass change through time
+
 ```{r}
 species_order <- c("small_fish", "ruffe", "bream", "white_bream", 
                    "roach", "perch", "pikeperch")
@@ -1366,6 +1368,7 @@ death_all_timesteps_combined <- bind_rows(death_all_timesteps_list)
 ```
 
 with CI
+
 ```{r}
 # ── Filter for all 5 models ──
 target_scenario <- "species_3_4_5_6_7"
@@ -1513,8 +1516,8 @@ death_rate <- ggplot(death_heatmap_final, aes(x = w, y = Cause, fill = normalize
 
 ### Yield changes
 
-calibration with time series yields
-(only works after scenario with fishing)
+calibration with time series yields (only works after scenario with fishing)
+
 ```{r}
 # === 1. LOAD MODELS ===
 models <- list(
@@ -3313,6 +3316,7 @@ ggplot(pk_df, aes(x = prey_w, y = phi)) +
 Predation change
 
 predation rate = integral over all predator sizes of (predation kernel × predator abundance)
+
 ```{r}
 sim    <- all_model_results[["M5_kappa7_lambda2.05extMort01_0.333.rds"]][["species_3_4_5_6_7"]]
 params <- sim@params
@@ -3368,7 +3372,6 @@ ggplot(pr_df, aes(x = prey_w, y = pred_rate, color = version)) +
   )
 
 ```
-
 
 # Yields with true effort
 
@@ -3657,7 +3660,6 @@ p_diff <- ggplot(baseline_diff_summary,
 print(p_diff)
 ```
 
-
 ```{r}
 sp_order
 # compare against the order panels actually appear:
@@ -3839,7 +3841,6 @@ yield_absolute
 # ggsave("yield_absoluteF.tiff", yield_absolute, width = 9, height = 8, dpi = 600, bg = "white")
 ```
 
-
 ```{r}
 # Convert yields to tonnes by multiplying by area
 area_km2 <- 381.6
@@ -3936,6 +3937,5 @@ yield_loss <- ggplot() +
 
 # write.csv(abs_band, "abs_band.csv", row.names = FALSE)
 ```
-
 
 -------------THE END---------- 🐟🎣
