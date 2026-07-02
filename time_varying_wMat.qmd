@@ -230,8 +230,8 @@ biomass_change_summary <- combined_biomass_data %>%
   summarise(
     mean_change = mean(biomass_change_percent),
     median_change = median(biomass_change_percent),
-    min_change = min(biomass_change_percent),      # minimum value across models
-    max_change = max(biomass_change_percent),      # maximum value across models
+    min_change = min(biomass_change_percent),     
+    max_change = max(biomass_change_percent),      
     .groups = 'drop'
   )
  
@@ -447,7 +447,7 @@ changes_summary$Scenario_label <- factor(changes_summary$Scenario_label,
 ```
 
 ```{r}
-# After running fishing scenarios, save the summary
+# After running fishing scenarios, saving the summary
 changes_summary_fishing <- changes_summary %>%
   filter(Scenario_label != "no change") %>%
   mutate(
@@ -460,7 +460,7 @@ changes_summary_fishing <- changes_summary %>%
 ```
 
 ```{r}
-# Filter out "No change" scenario and create custom label
+# Filtering out "No change" scenario and creating custom labels
 changes_summary <- changes_summary_fishing %>%
   filter(Scenario_label != "no change") %>%
   mutate(
@@ -1147,7 +1147,7 @@ For each predator body size class and time step, we calculated the percent chang
 with ci
 
 ```{r}
-# ── Extract diet data ──
+# Extract diet data
 diet_all_timesteps_list <- list()
 for (model_name in names(all_model_results)) {
   for (scenario_name in names(all_model_results[[model_name]])) {
@@ -1182,7 +1182,7 @@ for (model_name in names(all_model_results)) {
 }
 diet_all_timesteps_combined <- bind_rows(diet_all_timesteps_list)
 
-# ── Filter for plotting — all 5 models, target scenario ──
+# Filter for plotting target scenario 
 target_scenario <- "species_3_4_5_6_7"
 
 diet_plot_data <- diet_all_timesteps_combined %>%
@@ -1192,7 +1192,7 @@ diet_plot_data <- diet_all_timesteps_combined %>%
     Prey != "External"
   )
 
-# ── Per-model summary: total pp_change per model × predator × prey ──
+# Per-model summary: total pp_change per model × predator × prey
 prey_summary_per_model <- diet_plot_data %>%
   group_by(Model, Predator, Prey) %>%
   summarise(
@@ -1202,7 +1202,7 @@ prey_summary_per_model <- diet_plot_data %>%
   ) %>%
   mutate(total_pp_change = (total_current - total_baseline) * 100)
 
-# ── Interval summary: min–max across all 5 models per predator × prey ──
+# Interval summary: min–max across all 5 models per predator × prey
 prey_summary_interval <- prey_summary_per_model %>%
   group_by(Predator, Prey) %>%
   summarise(
@@ -1223,12 +1223,12 @@ prey_summary_interval <- prey_summary_per_model %>%
     w = Inf
   )
 
-# ── Mean across all 5 models for tile colours ──
+# Mean across all 5 models for tile colours
 diet_plot_data_fill <- diet_plot_data %>%
   group_by(w, Predator, Prey) %>%
   summarise(pp_change = mean(pp_change, na.rm = TRUE), .groups = "drop")
 
-# ── Plot ──
+# Plot
 diet <- ggplot(diet_plot_data_fill, aes(x = w, y = Prey, fill = pp_change)) +
   geom_tile(width = diff(range(log10(diet_plot_data_fill$w))) / 50) +
   geom_text(
@@ -1269,7 +1269,7 @@ diet <- ggplot(diet_plot_data_fill, aes(x = w, y = Prey, fill = pp_change)) +
   ) +
   coord_cartesian(clip = "off")
 
-# First, I run the simulation with fishing and save it as dietF, then rename it to diet when running without fishing.
+# First, I run the simulation with fishing and save it as dietF, then rename it to diet when running without fishing (above code in this chunk) and continue from here
 dietF | diet
 
 diet_clean <- diet + 
@@ -1333,7 +1333,7 @@ for (model_name in names(all_model_results)) {
       }))
     }
     
-    # ── Baseline (t = 1) ──
+    # Baseline (t = 1)
     baseline_df <- get_mort_df(1) %>% rename(baseline_value = value)
     
     # Total baseline predation summed across sizes per predator × prey
@@ -1343,12 +1343,12 @@ for (model_name in names(all_model_results)) {
       group_by(Cause, Prey) %>%
       summarise(total_baseline = sum(baseline_value, na.rm = TRUE), .groups = "drop")
     
-    # ── All time steps ──
+    # All time steps
     all_times_df <- do.call(rbind, lapply(seq_along(times), function(t) {
       get_mort_df(t) %>% mutate(time_step = times[t], time_index = t)
     })) %>% rename(current_value = value)
     
-    # ── Join and normalize ──
+    # Join and normalize
     death_all_timesteps_list[[paste0(model_name, "_", scenario_name)]] <- all_times_df %>%
       left_join(baseline_df %>% select(w, Cause, Prey, baseline_value), by = c("w", "Cause", "Prey")) %>%
       left_join(size_total_baseline, by = c("Cause", "Prey")) %>%
@@ -1370,7 +1370,7 @@ death_all_timesteps_combined <- bind_rows(death_all_timesteps_list)
 with CI
 
 ```{r}
-# ── Filter for all 5 models ──
+# Filter for all 5 models
 target_scenario <- "species_3_4_5_6_7"
 max_t           <- max(death_all_timesteps_combined$time_index)
 
@@ -1383,7 +1383,7 @@ death_heatmap_all_models <- death_all_timesteps_combined %>%
   )
 
 
-# ── Per-model summary: total % change per model × prey ──
+# Per-model summary: total % change per model × prey
 prey_label_per_model <- death_heatmap_all_models %>%
   group_by(Model, Prey) %>%
   summarise(
@@ -1393,7 +1393,7 @@ prey_label_per_model <- death_heatmap_all_models %>%
   ) %>%
   mutate(pct_change = (total_absolute_change / total_baseline) * 100)
 
-# ── Interval summary: min–max across all 5 models per prey ──
+# Interval summary: min–max across all 5 models per prey
 prey_interval_label <- prey_label_per_model %>%
   group_by(Prey) %>%
   summarise(
@@ -1415,7 +1415,7 @@ prey_interval_label <- prey_label_per_model %>%
   )
 
 
-# For each model, Prey, Cause — find the w where normalized_change crosses zero
+# For each model, Prey, Cause — finding the w where normalized_change crosses zero
 zero_crossings <- death_heatmap_all_models %>%
   group_by(Model, Prey, Cause) %>%
   arrange(w) %>%
@@ -1439,7 +1439,7 @@ death_heatmap_final <- death_heatmap_all_models %>%
   summarise(normalized_change = mean(normalized_change, na.rm = TRUE), .groups = "drop")
 
 prey_order <- c("small_fish", "ruffe", "bream", "white_bream",
-                "roach", "perch", "pikeperch")   # your full order, raw names
+                "roach", "perch", "pikeperch")   
 
 death_heatmap_final$Prey  <- factor(death_heatmap_final$Prey,  levels = prey_order)
 prey_interval_label$Prey  <- factor(prey_interval_label$Prey,  levels = prey_order)
@@ -1519,7 +1519,7 @@ death_rate <- ggplot(death_heatmap_final, aes(x = w, y = Cause, fill = normalize
 calibration with time series yields (only works after scenario with fishing)
 
 ```{r}
-# === 1. LOAD MODELS ===
+# Load Models
 models <- list(
   M3  = read_rds("M6_kappa8_lambda2.05extMort01_0.333.rds"),
   M4  = read_rds("M4_kappa7_lambda2.05extMort01_0.25.rds"),
@@ -1529,7 +1529,7 @@ models <- list(
 )
 
 
-f_data        <- read.csv("../Data/CLF_1990_2023matrix_ci.csv")
+f_data        <- read.csv("CLF_1990_2023matrix_ci.csv")
 years_data    <- f_data$Year
 main_species  <- c("Bream", "Perch", "Pikeperch", "Roach", "White_bream")
 f_main        <- as.matrix(f_data[, main_species])
@@ -1592,7 +1592,7 @@ y_all_models <- lapply(names(models), function(name) {
 y_all_models_filtered <- y_all_models %>%
   filter(!sp %in% c("small_fish", "ruffe"))
 
-# === 2. GET BASELINE & MATURITY DECLINE YIELDS ===
+# Get baseline & maturity decline yields 
 # NOTE: all_model_results must already be loaded in your environment
 y_baseline <- data.frame()
 for (model_name in names(all_model_results)) {
@@ -1617,7 +1617,7 @@ for (model_name in names(all_model_results)) {
 y_baseline         <- y_baseline         %>% filter(!sp %in% c("small_fish", "ruffe"))
 y_maturity_decline <- y_maturity_decline %>% filter(!sp %in% c("small_fish", "ruffe"))
 
-# === 3. MULTIPLIER EXTRACTION & APPLICATION ===
+# multiplier extraction & application
 y_baseline_1_30 <- y_baseline %>% filter(time >= 1 & time <= 30)
 
 y_curved_remapped <- y_all_models_filtered %>%
@@ -1689,7 +1689,7 @@ y_maturity_curved  <- apply_all_multipliers(y_maturity_decline %>% filter(time <
   mutate(scenario = "With maturity decline")
 y_final_curved     <- bind_rows(y_baseline_curved, y_maturity_curved)
 
-# === 4. REVERSED YIELD CHANGES ===
+# Reversed yield changes
 yield_changes_reversed <- y_final_curved %>%
   select(time, sp, model, scenario, value) %>%
   pivot_wider(names_from = scenario, values_from = value) %>%
@@ -1709,7 +1709,7 @@ uncertainty_analysis_reversed <- yield_changes_reversed %>%
     .groups = "drop"
   )
 
-# === 5. CUMULATIVE LOSS LABELS ===
+# Cumulative loss labels
 cumulative_loss_labels <- uncertainty_analysis_reversed %>%
   group_by(sp) %>%
   summarise(
@@ -1723,7 +1723,7 @@ cumulative_loss_labels <- uncertainty_analysis_reversed %>%
     y_pos = -15
   )
 
-# === 6. FINAL PLOT ===
+# final plot with constant effort
 yield_loss <- ggplot() +
   geom_ribbon(data = uncertainty_analysis_reversed,
               aes(x = year, ymin = min_percent_change, ymax = max_percent_change),
@@ -1744,78 +1744,6 @@ yield_loss <- ggplot() +
   My_theme
 
 # ggsave("yield_loss.tiff", yield_loss, width = 7, height = 7, dpi = 600, bg = "white")
-```
-
-```{r}
-# === PERCENT-CHANGE PLOT (single-colour version of the orange/blue figure) ===
-# Uses y_final_curved from the multiplier workflow (curved data, time 1–30)
-
-# --- 1. Percent change per model, per species, per timestep ---
-yield_changes <- y_final_curved %>%
-  select(time, sp, model, scenario, value) %>%
-  pivot_wider(names_from = scenario, values_from = value) %>%
-  mutate(
-    percent_change = ((`With maturity decline` - Baseline) / Baseline) * 100,
-    year           = 1992 + time          # 1 -> 1993, 30 -> 2022
-  )
-
-# --- 2. Across-model min–max range (the shaded background) ---
-yield_range <- yield_changes %>%
-  group_by(sp, time, year) %>%
-  summarise(
-    min_percent_change = min(percent_change, na.rm = TRUE),
-    max_percent_change = max(percent_change, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-# --- 3. Cumulative loss label per species (summed across all years) ---
-cumulative_loss_labels <- yield_range %>%
-  group_by(sp) %>%
-  summarise(
-    total_min_loss = sum(min_percent_change, na.rm = TRUE),
-    total_max_loss = sum(max_percent_change, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    label = paste0("Cumulative change: ",
-                   round(total_max_loss, 0), " – ",
-                   round(total_min_loss, 0), "%")
-  )
-
-# --- 4. Plot ---
-yield_loss <- ggplot() +
-  # shaded across-model range
-  geom_ribbon(data = yield_range,
-              aes(x = year, ymin = min_percent_change, ymax = max_percent_change),
-              fill = "grey70", alpha = 0.4) +
-  # individual model lines
-  geom_line(data = yield_changes,
-            aes(x = year, y = percent_change, group = model),
-            colour = "grey20", alpha = 0.6, linewidth = 0.7) +
-  geom_hline(yintercept = 0, linetype = "dashed", colour = "gray50") +
-  # cumulative loss label (top-left of each panel)
-  geom_text(data = cumulative_loss_labels,
-            aes(x = 1993, y = Inf, label = label),
-            size = 3.5, fontface = "bold",
-            hjust = 0, vjust = 1.5,
-            inherit.aes = FALSE) +
-  facet_wrap(~sp, scales = "free_y") +
-  scale_x_continuous(breaks = c(1993, 2002, 2012, 2022),
-                     labels = c("1993", "2002", "2012", "2022")) +
-  labs(x = "Year",
-       y = "Yield change (%)") +
-  My_theme +
-  theme(
-    panel.border    = element_blank(),
-    axis.line.x     = element_line(color = "gray50", linewidth = 0.3),
-    axis.line.y     = element_line(color = "gray50", linewidth = 0.3),
-    panel.spacing   = unit(1, "lines"),
-    strip.background = element_blank(),
-    strip.text      = element_text(face = "bold")
-  )
-
-yield_loss
-
 ```
 
 # Size spectra change
@@ -1872,7 +1800,7 @@ species_colors <- c(
   "pikeperch" = "#93AA00"
 )
 
-# Option A: Percent change in actual numbers
+# Percent change in actual numbers
 ggplot(sf_combined %>% filter(Scenario == "species_3_4_5_6_7"),
        aes(x = w, y = pct_change,
            colour = Legend,
@@ -1892,10 +1820,10 @@ ggplot(sf_combined %>% filter(Scenario == "species_3_4_5_6_7"),
 ```
 
 ```{r}
-# 1. Get w bins
+# Get w bins
 w_bins <- all_model_results$`M5_kappa7_lambda2.05extMort01_0.333.rds`$all_species@params@w
 
-# 2. Snap thresholds to nearest bin
+# Snap thresholds to nearest bin
 w_max_final <- tibble(
   Legend       = c("small_fish", "ruffe", "bream", "white_bream", "roach", "perch", "pikeperch"),
   w_max_thresh = c(Inf, Inf, 2783.0279, 474.9298, 719.9572, 1107.1611, 3630.0364)
@@ -1903,10 +1831,10 @@ w_max_final <- tibble(
   mutate(w_max_thresh = ifelse(is.infinite(w_max_thresh), Inf,
            w_bins[sapply(w_max_thresh, function(x) which.min(abs(w_bins - x)))]))
 
-# 3. Species order
+# Species order
 species_order <- c("pikeperch", "bream", "perch", "roach", "white_bream", "ruffe", "small_fish")
 
-# 4. w_mat reference lines data
+# w_mat reference lines data
 w_max_t50 <- data.frame(
   Legend        = species_params(cur_model)$species,
   w_max_initial = species_params(cur_model)$w_max,
@@ -1920,14 +1848,14 @@ w_max_t50 <- data.frame(
     w_mat_t50 = ifelse(Legend %in% c("small_fish", "ruffe"), w_mat_initial, w_mat_t50)
   )
 
-# 5. Build nd_ratio ONCE (used for both plots)
+# Build nd_ratio (used for both plots)
 nd_ratio <- sf_combined %>%
   filter(Scenario == "species_3_4_5_6_7", N_first > 1e-10) %>%
   mutate(ratio = N_last / N_first) %>%
   left_join(w_max_final, by = "Legend") %>%
   mutate(reliable = w <= w_max_thresh)
 
-# 6. Build nd_ratio_plot for the ratio plot
+# Build nd_ratio_plot for the ratio plot
 nd_ratio_plot <- bind_rows(
   nd_ratio,
   nd_ratio %>%
@@ -1938,10 +1866,10 @@ nd_ratio_plot <- bind_rows(
   arrange(Legend, Model, w) %>%
   mutate(Legend = factor(Legend, levels = species_order))
 
-# 7. Build nd_ratio_p1_plot for the pct_change plot (same data, different y)
+# Build nd_ratio_p1_plot for the pct_change plot (same data, different y)
 nd_ratio_p2_plot <- nd_ratio_plot  # identical structure, pct_change column already present
 
-# 8. Plot ratio
+# Plot ratio
 ggplot() +
   geom_line(data = nd_ratio_plot %>% filter(reliable),
             aes(x = w, y = ratio, colour = Legend,
@@ -1959,7 +1887,7 @@ ggplot() +
   My_theme +
   theme(legend.position = "bottom")
 
-# 9. Plot pct_change (p1)
+# Plot pct_change (p1)
 p2 <- ggplot() +
   geom_line(data = nd_ratio_p2_plot %>% filter(reliable),
             aes(x = w, y = pct_change, colour = Legend,
@@ -2015,7 +1943,7 @@ spectrum2 <- p2 + inset_element(p2_inset, left = 0.01, bottom = 0.6, right = 0.3
 adding bar plot beneath
 
 ```{r}
-# ── Step 1: rebuild p1 with correct x limits ──
+# p1 with correct x limits
 p1 <- ggplot() +
   geom_line(data = nd_ratio_p1_plot %>% filter(reliable),
             aes(x = w, y = pct_change, colour = Legend,
@@ -2049,14 +1977,14 @@ p1 <- ggplot() +
     axis.ticks.x = element_line()
   )
 
-# ── Step 2: attach inset to p1 ──
-spectrum1 <- p1 + inset_element(p1_inset,    # your small inset plot (renamed to avoid clash)
+# attach inset to p1
+spectrum1 <- p1 + inset_element(p1_inset,   
                                left   = 0.01, 
                                bottom = 0.6, 
                                right  = 0.35, 
                                top    = 0.99)
 
-# ── Bream-only heatmap (panel b) — ALL models ──
+# Bream-only heatmap (panel b)
 death_heatmap_bream_all <- death_all_timesteps_combined %>%
   filter(
     Scenario   == target_scenario,
@@ -2067,12 +1995,12 @@ death_heatmap_bream_all <- death_all_timesteps_combined %>%
     w          >= 1
   ) 
 
-# ── Mean across models for colouring ──
+#  Mean across models for colouring
 death_heatmap_bream <- death_heatmap_bream_all %>%
   group_by(w, Cause) %>%
   summarise(normalized_change = mean(normalized_change, na.rm = TRUE), .groups = "drop")
 
-# ── Zero-crossing band across models ──
+# Zero-crossing band across models
 zero_band_bream <- death_heatmap_bream_all %>%
   group_by(Model, Cause) %>%
   arrange(w) %>%
@@ -2087,7 +2015,7 @@ zero_band_bream <- death_heatmap_bream_all %>%
     .groups   = "drop"
   )
 
-# ── Plot ──
+# Plot
 p_heat1 <- ggplot(death_heatmap_bream, aes(x = w, y = Cause, fill = normalized_change)) +
   geom_tile() +
   
@@ -2146,7 +2074,7 @@ p_heat1 <- ggplot(death_heatmap_bream, aes(x = w, y = Cause, fill = normalized_c
   coord_cartesian(clip = "off")
 
 
-# ── Recombine ──
+# Recombine
 final_plot1 <- spectrum1 / p_heat1 +
   plot_layout(heights = c(4, 0.5), guides = "keep") 
   # + plot_annotation(tag_levels = "a")
@@ -2160,7 +2088,7 @@ final_plot1 | final_plot2
 common plot
 
 ```{r}
-# ── Titles go on the spectrum (p1), not the final_plot ──
+# Titles go on the spectrum (p1), not the final_plot
 p1_fishing    <- p1 + ggtitle("With fishing") + 
   theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
         legend.position = "none")
@@ -2169,34 +2097,34 @@ p1_no_fishing <- p2 + ggtitle("Without Fishing") +
   theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
         legend.position = "none")
 
-# ── Rebuild spectrums with titled p1 ──
+# Rebuild spectrums with titled p1
 spectrum_fishing    <- p1_fishing    + inset_element(p1_inset, left = 0.01, bottom = 0.6,
                                                       right = 0.35, top = 0.99)
 spectrum_no_fishing <- p1_no_fishing + inset_element(p2_inset, left = 0.01, bottom = 0.5,
                                                       right = 0.45, top = 0.99)
 
-# ── Rebuild final plots ──
+# Rebuild final plots
 final_plot1 <- spectrum_fishing    / p_heat1 + plot_layout(heights = c(4, 0.5), guides = "keep")
 final_plot2 <- spectrum_no_fishing / p_heat2 + plot_layout(heights = c(4, 0.5), guides = "keep")
 
-# ── Strip y-axis from right panel ──
+# Strip y-axis from right panel
 final_plot2_clean <- final_plot2 & 
   theme(axis.text.y  = element_blank(),
         axis.ticks.y = element_blank(),
         axis.title.y = element_blank())
 
-# ── Shared legend from p1 ──
+# Shared legend from p1
 shared_legend <- get_legend(
   p1 + theme(legend.position  = "bottom",
              legend.direction = "horizontal")
 )
 
-# ── Combine panels ──
+# Combine panels
 combined <- (final_plot1 | final_plot2_clean) +
   plot_layout(guides = "collect") &
   theme(legend.position = "bottom")
 
-# ── Add shared legend below ──
+#  Add shared legend below
 final_with_legend <- plot_grid(
   patchworkGrob(combined),
   shared_legend,
@@ -2208,7 +2136,7 @@ final_with_legend
 ```
 
 ```{r}
-# ── p1 ──
+# p1
 p1 <- ggplot() +
   geom_line(data = nd_ratio_p1_plot %>% filter(reliable),
             aes(x = w, y = pct_change, colour = Legend,
@@ -2236,12 +2164,12 @@ p1 <- ggplot() +
   My_theme +
   theme(legend.position = "none")  # removed here, added via shared legend later
 
-# ── Inset ──
+# Inset
 spectrum1 <- p1 + inset_element(p1_inset,
                                 left = 0.01, bottom = 0.6,
                                 right = 0.35, top = 0.99)
 
-# ── Heatmap data ──
+# Heatmap data
 death_heatmap_bream_all <- death_all_timesteps_combined %>%
   filter(
     Scenario       == target_scenario,
@@ -2270,7 +2198,7 @@ zero_band_bream <- death_heatmap_bream_all %>%
     .groups   = "drop"
   )
 
-# ── p_heat1 — matching x scale to p1 ──
+# p_heat1 — matching x scale to p1
 p_heat1 <- ggplot(death_heatmap_bream, aes(x = w, y = Cause, fill = normalized_change)) +
   geom_tile() +
   geom_rect(
@@ -2319,7 +2247,7 @@ p_heat1 <- ggplot(death_heatmap_bream, aes(x = w, y = Cause, fill = normalized_c
   ) +
   coord_cartesian(xlim = c(1, 6000), clip = "off")  # matches p1
 
-# ── Combine ──
+# Combine
 final_plot1 <- spectrum1 / p_heat1 +
   plot_layout(heights = c(4, 0.5), guides = "keep")
 
@@ -2327,7 +2255,7 @@ final_plot1
 ```
 
 ```{r}
-# ── p1 ──
+# p1
 p2 <- ggplot() +
   geom_line(data = nd_ratio_p2_plot %>% filter(reliable),
             aes(x = w, y = pct_change, colour = Legend,
@@ -2355,12 +2283,12 @@ p2 <- ggplot() +
   My_theme +
   theme(legend.position = "none")  # removed here, added via shared legend later
 
-# ── Inset ──
+# Inset
 spectrum2 <- p2 + inset_element(p2_inset,
                                 left = 0.01, bottom = 0.6,
                                 right = 0.35, top = 0.99)
 
-# ── Heatmap data ──
+# Heatmap data
 death_heatmap_bream_all <- death_all_timesteps_combined %>%
   filter(
     Scenario       == target_scenario,
@@ -2389,7 +2317,7 @@ zero_band_bream <- death_heatmap_bream_all %>%
     .groups   = "drop"
   )
 
-# ── p_heat1 — matching x scale to p1 ──
+# p_heat1 — matching x scale to p1
 p_heat2 <- ggplot(death_heatmap_bream, aes(x = w, y = Cause, fill = normalized_change)) +
   geom_tile() +
   geom_rect(
@@ -2438,7 +2366,7 @@ p_heat2 <- ggplot(death_heatmap_bream, aes(x = w, y = Cause, fill = normalized_c
   ) +
   coord_cartesian(xlim = c(1, 6000), clip = "off")  # matches p1
 
-# ── Combine ──
+# Combined
 final_plot2 <- spectrum2 / p_heat2 +
   plot_layout(heights = c(4, 0.5), guides = "keep")
 
@@ -2488,13 +2416,13 @@ p2_titled <- p2 + ggtitle("Without fishing") +
   theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
         axis.text.y = element_text(size = 13))
 
-# ── Spectrums with insets ──
+# Spectrums with insets
 spectrum1 <- p1_titled + inset_element(p1_inset, left = 0.01, bottom = 0.6,
                                         right = 0.35, top = 0.99)
 spectrum2 <- p2_titled + inset_element(p2_inset, left = 0.01, bottom = 0.6,
                                         right = 0.35, top = 0.99)
 
-# ── Heatmap with larger predator labels ──
+# Heatmap with predator labels
 p_heat1 <- p_heat1 + theme(axis.text.y = element_text(size = 13))
 
 p_heat2_clean <- p_heat2 +
@@ -2502,7 +2430,7 @@ p_heat2_clean <- p_heat2 +
         axis.ticks.y = element_blank(),
         axis.title.y = element_blank())
 
-# ── Final plots ──
+# Final plots
 final_plot1_clean <- (spectrum1 / p_heat1) +
   plot_layout(heights = c(4, 0.5)) &
   theme(legend.position = "none")
@@ -2514,7 +2442,7 @@ final_plot2_clean <- (spectrum2 / p_heat2_clean) +
 
 library(cowplot)
 
-# ── Legends ──
+# Legends
 legend_species <- get_legend(
   p1 + theme(legend.position  = "bottom",
              legend.direction = "horizontal",
@@ -2539,7 +2467,7 @@ legend_heatmap <- get_legend(
         label.theme    = element_text(size = 15, color = "black")   # numbers size
 )
 
-# ── Combine ──
+# Combined
 final_with_legend <- plot_grid(
   patchworkGrob(final_plot1_clean | final_plot2_clean),
   legend_heatmap,
@@ -2604,7 +2532,7 @@ zero_crossing <- nd_ratio %>%
   mutate(sign = sign(pct_change),
          sign_change = sign != lag(sign) & lag(sign) == 1 & sign == -1) %>%
   filter(sign_change) %>%
-  slice(n()) %>%  # take LAST crossing
+  slice(n()) %>%  # take last crossing
   summarise(
     w_zero_crossing = w,
     bin_index = which.min(abs(w_bins - w)),
@@ -2649,7 +2577,7 @@ w <- w(n_firstM@params)
 bins_all <- 1:200
 B_total1.3 <- sum(n[1, 3, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
 
-# Each class contribution relative to TOTAL initial biomass
+# Each class contribution relative to total initial biomass
 bins_big  <- 191:200
 bins_mid  <- 188:190
 bins_mat  <- 162:187
@@ -2686,7 +2614,7 @@ white bream
 bins_all <- 1:200
 B_total1.4 <- sum(n[1, 4, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
 
-# Each class contribution relative to TOTAL initial biomass
+# Each class contribution relative to total initial biomass
 bins_big  <- 169:200
 bins_mat  <- 127:168
 bins_small <- 1:126
@@ -2716,7 +2644,7 @@ cat("direct total % change:", 100 * (B_total1.4 - B_total51.4) / B_total1.4, "\n
 bins_all <- 1:200
 B_total1.5 <- sum(n[1, 5, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
 
-# Each class contribution relative to TOTAL initial biomass
+# Each class contribution relative to total initial biomass
 bins_big  <- 174:200
 bins_mid  <- 157:173
 bins_mat  <- 137:156
@@ -2751,7 +2679,7 @@ cat("direct total % change:", 100 * (B_total1.5 - B_total51.5) / B_total1.5, "\n
 bins_all <- 1:200
 B_total1.6 <- sum(n[1, 6, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
 
-# Each class contribution relative to TOTAL initial biomass
+# Each class contribution relative to total initial biomass
 bins_big  <- 179:200
 bins_mid  <- 172:178
 bins_mat  <- 148:171
@@ -2787,7 +2715,7 @@ cat("direct total % change:", 100 * (B_total1.6 - B_total51.6) / B_total1.6, "\n
 bins_all <- 1:200
 B_total1.7 <- sum(n[1, 7, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
 
-# Each class contribution relative to TOTAL initial biomass
+# Each class contribution relative to total initial biomass
 bins_big  <- 195:200
 bins_mid  <- 193:194
 bins_mat  <- 165:192
@@ -2822,7 +2750,7 @@ cat("direct total % change:", 100 * (B_total1.7 - B_total51.7) / B_total1.7, "\n
 bins_all <- 1:200
 B_total1.2 <- sum(n[1, 2, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
 
-# Each class contribution relative to TOTAL initial biomass
+# Each class contribution relative to total initial biomass
 bins_mat  <- 103:200
 bins_small <- 1:102
 
@@ -2847,7 +2775,7 @@ cat("direct total % change:", 100 * (B_total1.2 - B_total51.2) / B_total1.2, "\n
 bins_all <- 1:200
 B_total1.1 <- sum(n[1, 1, bins_all] * w_bins[bins_all] * dw(n_firstM@params)[bins_all])
 
-# Each class contribution relative to TOTAL initial biomass
+# Each class contribution relative to total initial biomass
 
 bins_mat  <- 89:200
 bins_small <- 1:88
@@ -2878,7 +2806,7 @@ w <- w(n_firstM@params)
 #install.packages("gt")
 library(gt)
 
-# ── helper ────────────────────────────────────────────────────────────────────
+# helper
 compute_biomass_pct <- function(sp_idx, size_classes) {
   # size_classes: named list of bin ranges, e.g. list(small=1:88, mat=89:200)
   bins_all <- 1:200
@@ -2899,7 +2827,7 @@ pcts <- sapply(size_classes, function(bins) {
 c(pcts, total = sum(pcts), direct = 100 * (B1 - B0) / B0)
 }
 
-# ── species definitions ───────────────────────────────────────────────────────
+# species definitions
 species_list <- list(
   list(name = "Small fish",   idx = 1, classes = list(small = 1:85,   mat = 86:96, mid = 97:132, big = 133:200)),
   list(name = "Ruffe",        idx = 2, classes = list(small = 1:98,  mat = 99:110, mid = 111:152, big = 153:200)),
@@ -2913,7 +2841,7 @@ species_list <- list(
 ```
 
 ```{r}
-# ── compute for all models ────────────────────────────────────────────────────
+# compute for all models
 all_classes <- c("small", "mat", "mid", "big")
 
 compute_biomass_pct_model <- function(model_results, species_list) {
@@ -2947,7 +2875,7 @@ all_results <- lapply(names(all_model_results), function(m) {
     mutate(model = m)
 }) |> bind_rows()
 
-# ── summarise: min–max range per species × size class ────────────────────────
+# summarise: min–max range per species × size class
 range_df <- all_results |>
   group_by(species) |>
   summarise(across(c(small, mat, mid, big, total),
@@ -2955,7 +2883,7 @@ range_df <- all_results |>
                         max = ~max(., na.rm = TRUE))),
             .groups = "drop")
 
-# ── format as "min – max" labels ─────────────────────────────────────────────
+# format as "min – max" labels 
 format_range <- function(min_val, max_val) {
   min_r <- round(min_val, 0)
   max_r <- round(max_val, 0)
@@ -2979,7 +2907,7 @@ results_displayF <- range_df |>
   ) |>
   select(species, small, mat, mid, big, total)
 
-# ── total row: sum across species per model first, then range ─────────────────
+# total row: sum across species per model first, then range 
 totals_row <- all_results |>
   group_by(model) |>
   summarise(across(c(small, mat, mid, big, total),
@@ -3000,7 +2928,7 @@ totals_row <- all_results |>
 
 results_displayF <- bind_rows(results_displayF, totals_row)
 
-# ── gt table ──────────────────────────────────────────────────────────────────
+# gt table
 results_displayF |>
   gt(rowname_col = "species") |>
   tab_header(
@@ -3076,7 +3004,7 @@ w <- w(n_firstM@params)
 #install.packages("gt")
 library(gt)
 
-# ── helper ────────────────────────────────────────────────────────────────────
+# helper
 compute_biomass_pct <- function(sp_idx, size_classes) {
   # size_classes: named list of bin ranges, e.g. list(small=1:88, mat=89:200)
   bins_all <- 1:200
@@ -3097,7 +3025,7 @@ pcts <- sapply(size_classes, function(bins) {
 c(pcts, total = sum(pcts), direct = 100 * (B1 - B0) / B0)
 }
 
-# ── species definitions ───────────────────────────────────────────────────────
+# species definitions 
 species_list <- list(
   list(name = "Small fish",   idx = 1, classes = list(small = 1:88,   mat = 89:200)),
   list(name = "Ruffe",        idx = 2, classes = list(small = 1:102,  mat = 103:200)),
@@ -3111,7 +3039,7 @@ species_list <- list(
 ```
 
 ```{r}
-# ── compute for all models ────────────────────────────────────────────────────
+# compute for all models
 all_classes <- c("small", "mat", "big")
 
 compute_biomass_pct_model <- function(model_results, species_list) {
@@ -3145,7 +3073,7 @@ all_results <- lapply(names(all_model_results), function(m) {
     mutate(model = m)
 }) |> bind_rows()
 
-# ── summarise: min–max range per species × size class ────────────────────────
+# summarise: min–max range per species × size class 
 range_df <- all_results |>
   group_by(species) |>
   summarise(across(c(small, mat, big, total),
@@ -3153,7 +3081,7 @@ range_df <- all_results |>
                         max = ~max(., na.rm = TRUE))),
             .groups = "drop")
 
-# ── format as "min – max" labels ─────────────────────────────────────────────
+# format as "min – max" labels 
 format_range <- function(min_val, max_val) {
   min_r <- round(min_val, 0)
   max_r <- round(max_val, 0)
@@ -3176,7 +3104,7 @@ results_display <- range_df |>
   ) |>
   select(species, small, mat, big, total)
 
-# ── total row: sum across species per model first, then range ─────────────────
+# total row: sum across species per model first, then range
 totals_row <- all_results |>
   group_by(model) |>
   summarise(across(c(small, mat, big, total),
@@ -3196,7 +3124,7 @@ totals_row <- all_results |>
 
 results_display <- bind_rows(results_display, totals_row)
 
-# ── gt table ──────────────────────────────────────────────────────────────────
+# gt table 
 results_display |>
   gt(rowname_col = "species") |>
   tab_header(
@@ -3379,13 +3307,13 @@ ggplot(pr_df, aes(x = prey_w, y = pred_rate, color = version)) +
 psi_at_t <- function(params, t) {
   op  <- params@other_params$psi
   idx <- floor(t) + 1
-  idx <- max(1, min(idx, dim(op)[1]))   # clamp to valid range
+  idx <- max(1, min(idx, dim(op)[1])) 
   list(psi = op[idx, , ])
 }
 
-# === REALISTIC YEAR-BY-YEAR EFFORT: baseline vs decline ===
+# REALISTIC YEAR-BY-YEAR EFFORT: baseline vs decline
 
-# --- 0. Effort matrix + spin-up state (unchanged) ---
+# Effort matrix + spin-up state 
 build_realistic_effort <- function(params) {
   current_gear        <- gear_params(params)
   current_gear$gear   <- current_gear$species
@@ -3412,7 +3340,7 @@ build_realistic_effort <- function(params) {
   )
 }
 
-# --- 1. psi-array builder (unchanged; 31 rows for times 0:30) ---
+#  psi-array builder
 make_psi_array <- function(params, decrease_rate, n_years = 30) {
   times   <- 0:n_years
   species <- species_params(params)$species
@@ -3465,8 +3393,8 @@ make_psi_array <- function(params, decrease_rate, n_years = 30) {
   psi_array
 }
 
-# --- 2. Run one model: spin up to 1992, then project 1993-2022 ---
-#     under YEAR-BY-YEAR historical effort + time-varying psi.
+# Run one model: spin up to 1992, then project 1993-2022
+# under YEAR-BY-YEAR historical effort + time-varying psi
 decline_start <- 1993
 decline_end   <- 2022                          # 30 steps -> times 0:30
 n_years       <- decline_end - decline_start + 1   # = 30
@@ -3500,7 +3428,7 @@ run_realistic_decline <- function(params, decrease_rate) {
           initial_n_pp = npp0)
 }
 
-# --- 3. Loop models x {baseline, decline} ---
+# Loop models x {baseline, decline}
 decline_rate  <- c(0, 0, 0.01, 0.01, 0.01, 0.01, 0.01)
 baseline_rate <- rep(0, 7)
 
@@ -3513,14 +3441,13 @@ for (mn in names(models)) {
   )
 }
 
-# --- 4. Tidy yields ---
+# Tidy yields
 get_yield_df <- function(res, mn, scen) {
   yld <- getYield(res)                 # rows = saved timesteps
   n_t <- nrow(yld)
   yld %>% melt() %>%
     mutate(model = mn, scenario = scen) %>%
     filter(!sp %in% c("small_fish", "ruffe")) %>%
-    # overwrite whatever 'time' melt produced with a clean step index
     group_by(sp) %>%
     mutate(step = row_number() - 1) %>%   # 0,1,2,... per species
     ungroup() %>%
@@ -3537,6 +3464,7 @@ y_realistic <- bind_rows(lapply(names(realistic_results), function(mn) {
 ```
 
 ```{r}
+# biomass changes with real effort
 combined_biomass_data <- data.frame()
 
 for (model_name in names(realistic_results)) {
@@ -3661,53 +3589,12 @@ print(p_diff)
 ```
 
 ```{r}
-sp_order
-# compare against the order panels actually appear:
-sort(unique(as.character(abs_band_tonnes$sp)))
-
-
-effort_long <- as.data.frame(f_main) %>%
-  tibble::rownames_to_column("year") %>%
-  mutate(year = as.numeric(year)) %>%
-  tidyr::pivot_longer(-year, names_to = "sp", values_to = "effort")
-
-scale_tbl <- abs_band_tonnes %>%
-  group_by(sp) %>% summarise(ymax_panel = max(ymax, na.rm = TRUE), .groups = "drop") %>%
-  left_join(
-    effort_long %>% group_by(sp) %>% summarise(emax = max(effort, na.rm = TRUE), .groups = "drop"),
-    by = "sp"
-  ) %>%
-  mutate(sf = ymax_panel / emax)
-
-effort_long <- effort_long %>%
-  left_join(scale_tbl, by = "sp") %>%
-  mutate(effort_scaled = effort * sf)
-
-library(ggh4x)
-sp_order <- levels(factor(abs_band_tonnes$sp))   # panel order top-left → bottom-right
-
-y_scales <- lapply(sp_order, function(s) {
-  sf  <- scale_tbl$sf[scale_tbl$sp == s]
-  emx <- scale_tbl$emax[scale_tbl$sp == s]
-  brks <- pretty(c(0, emx), n = 3)
-  brks <- brks[brks <= emx * 1.02]
-  scale_y_continuous(
-    limits   = c(0, NA),
-    expand   = expansion(mult = c(0, 0.05)),
-    sec.axis = sec_axis(~ . / sf, name = "Fishing mortality (F)", breaks = brks)
-  )
-})
-```
-
-```{r}
-# ============================================================
 # SETUP / CALCULATIONS
-# ============================================================
 library(ggh4x)
 
 area_km2 <- 381.6
 
-# --- Absolute yield band (ribbon data), converted to tonnes ---
+# Absolute yield band (ribbon data), converted to tonnes
 abs_band <- y_realistic %>%
   group_by(sp, year, scenario) %>%
   summarise(ymin = min(value), ymax = max(value),
@@ -3725,7 +3612,7 @@ abs_band_tonnes <- abs_band %>%
 # bream, white_bream, roach, perch, pikeperch
 abs_band_tonnes$sp <- droplevels(abs_band_tonnes$sp)
 
-# --- Cumulative loss labels (from percent-change pipeline) ---
+# Cumulative loss labels (from percent-change pipeline)
 yield_changes <- y_realistic %>%
   select(step, year, sp, model, scenario, value) %>%
   pivot_wider(names_from = scenario, values_from = value) %>%
@@ -3746,7 +3633,7 @@ cumulative_loss_labels <- uncertainty %>%
                         " — ", round(total_min_loss, 0), "%"),
          x_pos = decline_end - 1, y_pos = -1)
 
-# --- Effort data (F values) reshaped long, names matched to yield ---
+# Effort data (F values) reshaped long, names matched to yield
 effort_long <- as.data.frame(f_main) %>%
   tibble::rownames_to_column("year") %>%
   mutate(year = as.numeric(year)) %>%
@@ -3755,7 +3642,7 @@ effort_long <- as.data.frame(f_main) %>%
 # Align effort sp factor to the same levels/order as the yield data
 effort_long$sp <- factor(effort_long$sp, levels = levels(abs_band_tonnes$sp))
 
-# --- Per-species scale factor (yield max / effort max) ---
+#  Per-species scale factor (yield max / effort max)
 scale_tbl <- abs_band_tonnes %>%
   group_by(sp) %>% summarise(ymax_panel = max(ymax, na.rm = TRUE), .groups = "drop") %>%
   left_join(
@@ -3771,13 +3658,12 @@ effort_long <- effort_long %>%
   left_join(scale_tbl, by = "sp") %>%
   mutate(effort_scaled = effort * sf)
 
-# ============================================================
 # PER-PANEL Y-SCALES
-# ============================================================
+
 # Panel render order = factor levels, restricted to species present
 sp_order <- levels(abs_band_tonnes$sp)
 sp_order <- sp_order[sp_order %in% unique(as.character(abs_band_tonnes$sp))]
-# → bream, white_bream, roach, perch, pikeperch
+# bream, white_bream, roach, perch, pikeperch
 
 y_scales <- lapply(sp_order, function(s) {
   row <- scale_tbl[scale_tbl$sp == s, ]
@@ -3802,9 +3688,9 @@ y_scales <- lapply(sp_order, function(s) {
   )
 })
 
-# ============================================================
+
 # PLOT
-# ============================================================
+
 yield_absolute <- ggplot() +
   geom_ribbon(data = abs_band_tonnes,
               aes(x = year, ymin = ymin, ymax = ymax, fill = scenario),
@@ -3845,7 +3731,7 @@ yield_absolute
 # Convert yields to tonnes by multiplying by area
 area_km2 <- 381.6
 
-# === PLOT A: ABSOLUTE YIELDS (wiggles visible) ===
+# ABSOLUTE YIELDS
 abs_band <- y_realistic %>%
   group_by(sp, year, scenario) %>%
   summarise(ymin = min(value), ymax = max(value),
@@ -3857,8 +3743,6 @@ abs_band_tonnes <- abs_band %>%
     ymax  = ymax  * area_km2,
     ymean = ymean * area_km2
   )
-
-# ggsave("yield_loss.tiff", yield_loss, width = 7, height = 7, dpi = 600, bg = "white")
 
 yield_absolute <- ggplot() +
   geom_ribbon(data = abs_band_tonnes,
@@ -3893,7 +3777,7 @@ yield_absolute <- ggplot() +
 
 # ggsave("yield_absolute.tiff", yield_absolute, width = 8, height = 8, dpi = 600, bg = "white")
 
-# === PLOT B: PERCENT CHANGE (smooth maturity signal) ===
+# PERCENT CHANGE 
 yield_changes <- y_realistic %>%
   select(step, year, sp, model, scenario, value) %>%
   pivot_wider(names_from = scenario, values_from = value) %>%
